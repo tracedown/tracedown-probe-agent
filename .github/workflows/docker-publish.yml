@@ -3,8 +3,11 @@ name: Docker Publish
 # Publishes the probe agent image to Docker Hub — the agent is the one piece
 # operators deploy many times in many places, so `docker run` must be enough.
 #
-#   push to main  → :latest
-#   tag vX.Y.Z    → :X.Y.Z and :latest
+# Runs on every push to main: `:latest` always tracks main, and when the
+# pyproject version has not been published yet the same build is also pushed
+# as `:X.Y.Z` — so merging a version-bump PR ships the versioned image, in
+# lockstep with the Release workflow. Published version tags are never
+# overwritten.
 #
 # Requires two repository (or org) secrets:
 #   DOCKERHUB_USERNAME — Docker Hub account/namespace the image lives under
@@ -15,8 +18,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
 
 jobs:
   publish:
@@ -41,17 +42,26 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Login to Docker Hub
+        if: steps.creds.outputs.ok == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Compute image tags
         if: steps.creds.outputs.ok == 'true'
         id: tags
         env:
           IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/tracedown-probe-agent
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-            echo "tags=$IMAGE:$VERSION,$IMAGE:latest" >> "$GITHUB_OUTPUT"
-          else
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "Version $VERSION already published — pushing :latest only."
             echo "tags=$IMAGE:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version $VERSION — pushing :$VERSION and :latest."
+            echo "tags=$IMAGE:$VERSION,$IMAGE:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup QEMU
@@ -61,13 +71,6 @@ jobs:
       - name: Setup Buildx
         if: steps.creds.outputs.ok == 'true'
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        if: steps.creds.outputs.ok == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push (amd64 + arm64)
         if: steps.creds.outputs.ok == 'true'

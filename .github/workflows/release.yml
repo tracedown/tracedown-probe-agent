@@ -1,12 +1,15 @@
 name: Release
 
-# Tag vX.Y.Z → GitHub release with the sdist and wheel attached. The Docker
-# image for the same tag is published by the Docker Publish workflow.
+# Version-bump-driven, like the rest of the stack: runs on every push to main,
+# and publishes only when the version in pyproject.toml has no release yet.
+# Merging a PR that bumps the version IS the release trigger — the workflow
+# creates the vX.Y.Z tag and the GitHub release itself. The Docker image for
+# the same push is handled by the Docker Publish workflow.
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -21,30 +24,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check tag matches project version
+      - name: Read version
+        id: version
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
-          TAG="${GITHUB_REF_NAME#v}"
-          if [ "$VERSION" != "$TAG" ]; then
-            echo "Tag v$TAG does not match pyproject version $VERSION" >&2
-            exit 1
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.version.outputs.tag }} already exists — nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Python
+        if: steps.check.outputs.exists == 'false'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Build sdist and wheel
+        if: steps.check.outputs.exists == 'false'
         run: |
           pip install build
           python -m build
 
       - name: Create GitHub release
+        if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Tracedown Probe Agent $GITHUB_REF_NAME" \
-            --notes "Stateless Lace probe executor. Also available as a Docker image published from this tag — \`docker run\` with a bootstrap token is the fastest deployment; see the README." \
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --title "Tracedown Probe Agent ${{ steps.version.outputs.tag }}" \
+            --notes "Stateless Lace probe executor. Also available as a Docker image published from the same version — \`docker run\` with a bootstrap token is the fastest deployment; see the README." \
             dist/*
