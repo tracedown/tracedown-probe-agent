@@ -3,7 +3,7 @@ name: Docker Publish
 # Publishes the probe agent image to Docker Hub — the agent is the one piece
 # operators deploy many times in many places, so `docker run` must be enough.
 #
-# Runs after CI succeeds on a main push: `:latest` always tracks main, and when the
+# Runs on every push to main: `:latest` always tracks main, and when the
 # pyproject version has not been published yet the same build is also pushed
 # as `:X.Y.Z` — so merging a version-bump PR ships the versioned image, in
 # lockstep with the Release workflow. Published version tags are never
@@ -15,27 +15,19 @@ name: Docker Publish
 # The job skips gracefully when they are not configured.
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
+  push:
+    branches:
+      - main
 
 jobs:
   publish:
     name: Build & push image
     # Upstream-only: forks build via CI but never publish.
-    # Runs only after the CI run for this main push succeeded — an image
-    # can never ship from an untested commit.
-    if: >-
-      github.repository == 'tracedown/tracedown-probe-agent' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+    if: github.repository == 'tracedown/tracedown-probe-agent'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout tested commit
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Check Docker Hub credentials
         id: creds
