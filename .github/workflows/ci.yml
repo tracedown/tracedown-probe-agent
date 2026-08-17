@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    # 'edited' fires on PR title/body changes, so removing a 'WIP:' prefix
+    # re-triggers the checks without needing a new push.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches:
+      - main
+
+jobs:
+  # Pre-filter: skipped when the PR title starts with 'WIP:'. Every other job
+  # needs it, so a skipped gate cascades. Pushes to main always run.
+  wip-gate:
+    name: WIP gate
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.event.pull_request.title, 'WIP:') }}
+    steps:
+      - name: Not WIP
+        run: echo "Running checks."
+
+  lint:
+    name: Lint
+    needs: [wip-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Ruff
+        run: python -m ruff check src tests
+
+  tests:
+    name: Unit tests
+    needs: [wip-gate, lint]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+  # The agent ships as a container — a failing Dockerfile is a shipping bug,
+  # so build it (no push) and smoke-test the health endpoint. With no
+  # bootstrap token or certificates configured the agent serves plain HTTP,
+  # which is exactly what a smoke test wants.
+  docker-build:
+    name: Docker build
+    needs: [wip-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image (no push)
+        run: docker build -t tracedown-probe-agent:pr .
+
+      - name: Smoke-test /health
+        run: |
+          docker run -d --name smoke -e PROBE_AGENT_PORT=8443 \
+            -p 8443:8443 tracedown-probe-agent:pr
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8443/health && break
+            echo "waiting for agent... ($i/20)"; sleep 1
+          done
+          curl -sf http://localhost:8443/health
+          docker rm -f smoke

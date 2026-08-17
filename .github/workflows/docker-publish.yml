@@ -1,0 +1,79 @@
+name: Docker Publish
+
+# Publishes the probe agent image to Docker Hub — the agent is the one piece
+# operators deploy many times in many places, so `docker run` must be enough.
+#
+#   push to main  → :latest
+#   tag vX.Y.Z    → :X.Y.Z and :latest
+#
+# Requires two repository (or org) secrets:
+#   DOCKERHUB_USERNAME — Docker Hub account/namespace the image lives under
+#   DOCKERHUB_TOKEN    — access token with write scope
+# The job skips gracefully when they are not configured.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    name: Build & push image
+    # Upstream-only: forks build via CI but never publish.
+    if: github.repository == 'tracedown/tracedown-probe-agent'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check Docker Hub credentials
+        id: creds
+        env:
+          USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$USER" ] && [ -n "$TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not set — skipping publish."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        if: steps.creds.outputs.ok == 'true'
+        id: tags
+        env:
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/tracedown-probe-agent
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "tags=$IMAGE:$VERSION,$IMAGE:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$IMAGE:latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup QEMU
+        if: steps.creds.outputs.ok == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Buildx
+        if: steps.creds.outputs.ok == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: steps.creds.outputs.ok == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (amd64 + arm64)
+        if: steps.creds.outputs.ok == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
