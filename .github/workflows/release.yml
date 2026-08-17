@@ -1,15 +1,17 @@
 name: Release
 
-# Version-bump-driven, like the rest of the stack: runs on every push to main,
-# and publishes only when the version in pyproject.toml has no release yet.
+# Version-bump-driven and CI-gated: runs after the CI workflow succeeds on a
+# main push, and publishes only when the version in pyproject.toml has no
+# release yet.
 # Merging a PR that bumps the version IS the release trigger — the workflow
 # creates the vX.Y.Z tag and the GitHub release itself. The Docker image for
 # the same push is handled by the Docker Publish workflow.
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -18,11 +20,18 @@ jobs:
   release:
     name: Build & publish release
     # Upstream-only: forks never release.
-    if: github.repository == 'tracedown/tracedown-probe-agent'
+    # Runs only after the CI run for this main push succeeded — a release
+    # can never ship from an untested commit.
+    if: >-
+      github.repository == 'tracedown/tracedown-probe-agent' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout tested commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Read version
         id: version
@@ -61,7 +70,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
-            --target "$GITHUB_SHA" \
+            --target "${{ github.event.workflow_run.head_sha }}" \
             --title "Tracedown Probe Agent ${{ steps.version.outputs.tag }}" \
             --notes "Stateless Lace probe executor. Also available as a Docker image published from the same version — \`docker run\` with a bootstrap token is the fastest deployment; see the README." \
             dist/*
