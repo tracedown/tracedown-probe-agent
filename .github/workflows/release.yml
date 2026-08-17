@@ -1,0 +1,50 @@
+name: Release
+
+# Tag vX.Y.Z → GitHub release with the sdist and wheel attached. The Docker
+# image for the same tag is published by the Docker Publish workflow.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release
+    # Upstream-only: forks never release.
+    if: github.repository == 'tracedown/tracedown-probe-agent'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check tag matches project version
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "Tag v$TAG does not match pyproject version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Tracedown Probe Agent $GITHUB_REF_NAME" \
+            --notes "Stateless Lace probe executor. Also available as a Docker image published from this tag — \`docker run\` with a bootstrap token is the fastest deployment; see the README." \
+            dist/*
