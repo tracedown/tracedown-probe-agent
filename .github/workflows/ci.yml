@@ -51,7 +51,7 @@ jobs:
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          CODE=$(git diff --name-only "$BASE"...HEAD -- src/ tests/ pyproject.toml)
+          CODE=$(git diff --name-only "$BASE"...HEAD -- .github/workflows/ src/ tests/ pyproject.toml)
           if [ -n "$CODE" ]; then
             echo "Code changes detected (lint + tests will run):"; echo "$CODE"
             echo "code=true" >> "$GITHUB_OUTPUT"
