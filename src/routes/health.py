@@ -11,9 +11,8 @@ import logging
 import time
 
 from fastapi import APIRouter
-from pydantic import BaseModel
-
 from lacelang_executor import __version__ as executor_version
+from pydantic import BaseModel
 
 from services.executor import run_health_script
 
@@ -67,7 +66,7 @@ async def challenge(body: ChallengeRequest) -> ChallengeResponse:
             elapsed_ms=elapsed,
             success=True,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any failure must report as unhealthy, never crash the endpoint
         elapsed = int((time.monotonic() - start) * 1000)
         log.warning("health challenge failed: %s", exc)
         return ChallengeResponse(

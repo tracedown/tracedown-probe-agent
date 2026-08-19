@@ -5,8 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from storage.filesystem import FilesystemStorage
 from services.executor import _redact_body_bytes, _upload_bodies, init_storage
+from storage.filesystem import FilesystemStorage
 
 
 def test_filesystem_upload() -> None:

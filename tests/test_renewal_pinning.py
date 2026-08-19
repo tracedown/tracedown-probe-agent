@@ -16,8 +16,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-import mtls.renewal as renewal
 from config import AgentSettings
+from mtls import renewal
 from mtls.ca_pins import ca_fingerprints, write_pins
 
 

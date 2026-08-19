@@ -23,8 +23,8 @@ from mtls.renewal import renewal_loop
 from mtls.ssl_context import build_server_context, certs_exist
 from routes.health import router as health_router
 from routes.probe import router as probe_router
-from services.executor import init_probe_pool, init_storage
 from services import wire_metrics
+from services.executor import init_probe_pool, init_storage
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         # restart. uvicorn calls this factory once at startup and serves every
         # connection from the returned context object.
         app.state.server_ssl_context = server_ctx
-        ssl_context_factory = lambda config, default: server_ctx  # noqa: E731
+        ssl_context_factory = lambda config, default: server_ctx
         log.info("starting with mTLS on port %d", s.port)
     else:
         log.info("no certificates found — starting in plain HTTP mode on port %d", s.port)

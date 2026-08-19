@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-
 SAMPLE_EXECUTOR_RESULT = {
     "outcome": "success",
     "startedAt": "2026-05-01T12:00:00.000Z",

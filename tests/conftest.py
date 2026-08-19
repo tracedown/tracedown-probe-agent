@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 # application does at runtime (PYTHONPATH=src).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from main import create_app  # noqa: E402
+from main import create_app
 
 
 @pytest.fixture

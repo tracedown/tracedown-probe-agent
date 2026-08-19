@@ -19,14 +19,15 @@ from __future__ import annotations
 
 import http.client
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 _local = threading.local()
 
 
 class _Counter:
-    __slots__ = ("active", "ingress", "egress")
+    __slots__ = ("active", "egress", "ingress")
 
     def __init__(self) -> None:
         self.active = False
@@ -107,7 +108,7 @@ def install() -> None:
 
 
 @contextmanager
-def measure() -> Iterator["_Result"]:
+def measure() -> Iterator[_Result]:
     """Activates byte counting for the current thread for the duration of the
     block. Read the totals from the yielded object after the block."""
     c = _counter()

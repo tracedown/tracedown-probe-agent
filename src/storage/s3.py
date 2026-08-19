@@ -75,8 +75,7 @@ class S3Storage(BodyStorage):
 
 def _parse_uri(uri: str) -> tuple[str, str]:
     """Parse ``s3://bucket/key`` into (bucket, key)."""
-    if uri.startswith(SCHEME):
-        uri = uri[len(SCHEME):]
+    uri = uri.removeprefix(SCHEME)
     parts = uri.split("/", 1)
     if len(parts) != 2:
         raise ValueError(f"Invalid S3 URI: {uri}")
