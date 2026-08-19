@@ -88,9 +88,17 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
         if "laceEmitRecovery" in active_extensions:
             # The recovery text doubles as the dispatcher-side template, so a
             # ${var}-rich default gives the message context (service, path).
-            executor._config.setdefault("extensions", {})["laceEmitRecovery"] = {
+            recovery_cfg: dict = {
                 "recovery_message": "${s.name} in ${w.name}.${p.name} recovered",
             }
+            # A recoveryTemplate config variable names an org notification
+            # template for the recovery message instead — the tagged value is
+            # what template(<name>) would build, and a named template wins
+            # over the platform default at the dispatcher.
+            recovery_template = variables.get("recoveryTemplate")
+            if recovery_template:
+                recovery_cfg["notification"] = {"tag": "template", "name": recovery_template}
+            executor._config.setdefault("extensions", {})["laceEmitRecovery"] = recovery_cfg
 
         with wire_metrics.measure() as wire:
             result = executor.run(
