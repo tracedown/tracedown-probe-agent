@@ -54,15 +54,18 @@ class AgentSettings(BaseSettings):
     # in-flight count: peak_rps * avg_probe_seconds.
     max_concurrency: int = 256
 
-    # Body storage: "filesystem" or "r2"
+    # Body storage: "filesystem" or "s3"
     storage_backend: str = "filesystem"
     storage_dir: str = "/data/bodies"
 
-    # R2/S3 settings (only used when storage_backend == "r2")
-    r2_endpoint_url: str = ""
-    r2_access_key_id: str = ""
-    r2_secret_access_key: str = ""
-    r2_bucket: str = ""
-    r2_prefix: str = ""
+    # S3-compatible object store (AWS S3, Cloudflare R2, MinIO, …) —
+    # only used when storage_backend == "s3"
+    s3_endpoint_url: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_bucket: str = ""
+    s3_prefix: str = ""
+    # "auto" suits R2 and is ignored by MinIO; AWS S3 needs the bucket region.
+    s3_region: str = "auto"
 
     model_config = {"env_prefix": "PROBE_AGENT_"}

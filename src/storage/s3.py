@@ -1,4 +1,4 @@
-"""R2/S3-compatible body storage — for object-storage deployments."""
+"""S3-compatible body storage (AWS S3, Cloudflare R2, MinIO, …)."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ log = logging.getLogger(__name__)
 SCHEME = "s3://"
 
 
-class R2Storage(BodyStorage):
-    """Stores bodies in Cloudflare R2 (or any S3-compatible store).
+class S3Storage(BodyStorage):
+    """Stores bodies in any S3-compatible object store.
 
     Storage URIs use the ``s3://`` scheme: ``s3://{bucket}/{key}``.
     """
@@ -28,6 +28,7 @@ class R2Storage(BodyStorage):
         access_key_id: str,
         secret_access_key: str,
         prefix: str = "",
+        region: str = "auto",
     ) -> None:
         self._bucket = bucket
         self._prefix = prefix.rstrip("/")
@@ -38,7 +39,9 @@ class R2Storage(BodyStorage):
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
             config=BotoConfig(
-                region_name="auto",
+                # "auto" suits R2 and is ignored by MinIO; AWS S3 needs the
+                # bucket's real region here.
+                region_name=region,
                 signature_version="s3v4",
             ),
         )
@@ -50,7 +53,7 @@ class R2Storage(BodyStorage):
         return key
 
     def upload(self, local_path: Path, key: str) -> str:
-        """Upload a file to R2/S3.
+        """Upload a file to the object store.
 
         Returns an ``s3://`` URI, e.g. ``s3://my-bucket/prefix/call_0.json``.
         """

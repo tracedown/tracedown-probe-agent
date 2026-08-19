@@ -39,7 +39,7 @@ class BodyStorage(ABC):
         A protocol-prefixed storage URI that replaces ``bodyPath``
         in the result:
         - Filesystem: ``file://{absolute_path}``
-        - R2/S3: ``s3://{bucket}/{key}``
+        - S3-compatible: ``s3://{bucket}/{key}``
         """
 
     @abstractmethod

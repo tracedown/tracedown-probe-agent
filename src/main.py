@@ -2,7 +2,7 @@
 
 Startup lifecycle:
 1. Load settings from environment (``PROBE_AGENT_*``).
-2. Initialize body storage backend (filesystem or R2).
+2. Initialize body storage backend (filesystem or S3-compatible).
 3. If bootstrap_token + scheduler_url are set and no certs exist,
    generate a keypair and register with the scheduler (mTLS bootstrap).
 4. Start uvicorn with mTLS if certificates are present, plain HTTP
@@ -31,14 +31,15 @@ log = logging.getLogger(__name__)
 
 def _create_storage(settings: AgentSettings):
     """Build the configured body storage backend."""
-    if settings.storage_backend == "r2":
-        from storage.r2 import R2Storage
-        return R2Storage(
-            bucket=settings.r2_bucket,
-            endpoint_url=settings.r2_endpoint_url,
-            access_key_id=settings.r2_access_key_id,
-            secret_access_key=settings.r2_secret_access_key,
-            prefix=settings.r2_prefix,
+    if settings.storage_backend == "s3":
+        from storage.s3 import S3Storage
+        return S3Storage(
+            bucket=settings.s3_bucket,
+            endpoint_url=settings.s3_endpoint_url,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key,
+            prefix=settings.s3_prefix,
+            region=settings.s3_region,
         )
     else:
         from storage.filesystem import FilesystemStorage
