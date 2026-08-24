@@ -1,6 +1,6 @@
 [project]
 name = "tracedown-probe-agent"
-version = "0.1.2"
+version = "0.1.3"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
@@ -11,8 +11,8 @@ dependencies = [
     "pydantic>=2.11.0",
     "pydantic-settings>=2.8.0",
     "boto3>=1.35.0",
-    "lacelang-validator>=0.1.3,<0.2",
-    "lacelang-executor>=0.1.4,<0.2",
+    "lacelang-validator>=0.1.4,<0.2",
+    "lacelang-executor>=0.1.5,<0.2",
 ]
 
 [project.optional-dependencies]
