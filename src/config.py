@@ -4,7 +4,23 @@ All settings are prefixed with ``PROBE_AGENT_`` and read from the
 environment automatically by pydantic-settings.
 """
 
+from importlib.metadata import PackageNotFoundError, version as _package_version
+
 from pydantic_settings import BaseSettings
+
+
+def _agent_version() -> str:
+    """Installed package version, or a placeholder when the agent runs from a
+    source tree that was never installed (tests, ``python -m``)."""
+    try:
+        return _package_version("tracedown-probe-agent")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+#: Default value for :attr:`AgentSettings.user_agent` — the product name and
+#: its version, nothing more.
+DEFAULT_USER_AGENT = f"tracedown-agent/{_agent_version()}"
 
 
 class AgentSettings(BaseSettings):
@@ -53,6 +69,21 @@ class AgentSettings(BaseSettings):
     # pays a full ~0.5-1s TCP+TLS handshake). Set well above the expected
     # in-flight count: peak_rps * avg_probe_seconds.
     max_concurrency: int = 256
+
+    # How probes identify themselves to the servers they call.
+    #
+    # The executor would otherwise announce itself generically (lace-spec §3.6
+    # defaults to `lace-probe/<version> (<implementation>)`), which names the
+    # scripting language rather than the thing making the requests — no use to
+    # someone reading their own access log and trying to find out who we are.
+    # §3.6 exists for exactly this: a host platform sets its own fleet
+    # identifier and the executor sends it verbatim.
+    #
+    # An operator who publishes a page explaining the traffic appends a
+    # "+<url>" to it, e.g. `tracedown-agent/1.2.3 (+https://example.com/agent)`.
+    # That is also what separates one operator's fleet from every other install
+    # in a log: the bare default says only "some Tracedown".
+    user_agent: str = DEFAULT_USER_AGENT
 
     # Body storage: "filesystem" or "s3"
     storage_backend: str = "filesystem"

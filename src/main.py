@@ -25,7 +25,7 @@ from mtls.ssl_context import build_server_context, certs_exist
 from routes.health import router as health_router
 from routes.probe import router as probe_router
 from services import wire_metrics
-from services.executor import init_probe_pool, init_storage
+from services.executor import init_probe_pool, init_storage, init_user_agent
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     storage = _create_storage(settings)
     init_storage(storage)
     log.info("body storage: %s", settings.storage_backend)
+
+    init_user_agent(settings.user_agent)
+    log.info("probe user-agent: %s", settings.user_agent)
 
     if settings.bootstrap_token and settings.scheduler_url:
         await ensure_registered(settings)

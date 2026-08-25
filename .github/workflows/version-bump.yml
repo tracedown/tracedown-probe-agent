@@ -26,7 +26,7 @@ jobs:
           # The base commit has to be readable to compare against.
           fetch-depth: 0
 
-      - name: The version must change
+      - name: The version must be raised
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           VERSION_FILE: pyproject.toml
@@ -44,6 +44,19 @@ jobs:
 
           if [ "$head_version" = "$base_version" ]; then
             echo "::error file=$VERSION_FILE::Version is still $head_version, so merging this PR publishes nothing. Bump it, or label the PR 'no-release' if it ships nothing."
+            exit 1
+          fi
+
+          # "Changed" is not the same question as "bumped". A version that moves
+          # DOWN — a bad merge, a typo, a branch cut from the wrong base — passes
+          # a not-equal test while behaving exactly like no bump at all: the tag
+          # for the lower version already exists, so the release publishes
+          # nothing, and the check that exists to catch that reports success.
+          # Compare with `sort -V` so the answer is the version order, not string
+          # order (0.1.9 vs 0.1.10 disagree on those).
+          highest="$(printf '%s\n%s\n' "$base_version" "$head_version" | sort -V | tail -n1)"
+          if [ "$highest" != "$head_version" ]; then
+            echo "::error file=$VERSION_FILE::Version went backwards, $base_version -> $head_version. A release has to be a higher version than the base."
             exit 1
           fi
 

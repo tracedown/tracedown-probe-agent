@@ -49,11 +49,21 @@ _HEALTH_SCRIPT = 'get("$tokenUrl").expect(status: 200).store({ "$$token": this.b
 # Module-level storage reference, set by init_storage().
 _storage: BodyStorage | None = None
 
+# User-Agent every probe announces itself with, set by init_user_agent().
+# Empty leaves the executor's own generic default in place.
+_user_agent: str = ""
+
 
 def init_storage(storage: BodyStorage) -> None:
     """Set the body storage backend. Called once at startup."""
     global _storage
     _storage = storage
+
+
+def init_user_agent(user_agent: str) -> None:
+    """Set the User-Agent probes send. Called once at startup."""
+    global _user_agent
+    _user_agent = user_agent
 
 
 def _run_sync(payload: JobPayload) -> dict[str, Any]:
@@ -80,6 +90,11 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
             track_prev=False,
             extensions=active_extensions,
         )
+
+        # Spec §3.6 precedence: a script setting its own User-Agent still wins
+        # over this, which is per-deployment.
+        if _user_agent:
+            executor._config.setdefault("executor", {})["user_agent"] = _user_agent
 
         executor._config.setdefault("result", {})
         if payload.allow_body_save:
