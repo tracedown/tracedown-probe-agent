@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from config import AgentSettings
+from mtls import envelope
 from mtls.bootstrap import ensure_registered
 from mtls.renewal import renewal_loop
 from mtls.ssl_context import build_server_context, certs_exist
@@ -125,6 +126,16 @@ if __name__ == "__main__":
         # connection from the returned context object.
         app.state.server_ssl_context = server_ctx
         ssl_context_factory = lambda config, default: server_ctx
+        # The same key the certificate was issued for, held for opening a sealed
+        # dispatch. Loaded once here rather than per request: it is read from
+        # disk, and a probe should not pay for that on every run. Its presence is
+        # what /health advertises, so an agent without certificates simply
+        # reports that it cannot take sealed payloads.
+        try:
+            app.state.agent_private_key = envelope.load_private_key(s.key_path)
+        except Exception as exc:  # noqa: BLE001 — never fatal; sealing is optional
+            app.state.agent_private_key = None
+            log.warning("could not load the agent key for payload encryption: %s", exc)
         log.info("starting with mTLS on port %d", s.port)
     else:
         log.info("no certificates found — starting in plain HTTP mode on port %d", s.port)
