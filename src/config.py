@@ -4,7 +4,8 @@ All settings are prefixed with ``PROBE_AGENT_`` and read from the
 environment automatically by pydantic-settings.
 """
 
-from importlib.metadata import PackageNotFoundError, version as _package_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 
 from pydantic_settings import BaseSettings
 
