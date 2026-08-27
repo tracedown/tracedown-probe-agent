@@ -7,6 +7,7 @@ environment automatically by pydantic-settings.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -30,6 +31,40 @@ class AgentSettings(BaseSettings):
     # Bootstrap registration
     bootstrap_token: str = ""
     scheduler_url: str = ""
+
+    # --- Bootstrap transport trust -------------------------------------------
+    # The registration call is the one moment the agent has nothing to verify
+    # the gateway with: it carries the single-use bootstrap token and receives
+    # the CA bundle the agent then pins for life. An unauthenticated peer there
+    # means an on-path attacker reads the token and installs a CA of their own,
+    # so the peer is always authenticated somehow. See mtls/bootstrap_trust.py.
+
+    # PEM bundle of the CA that issued the gateway's certificate. Set it when
+    # the gateway is fronted by a private/internal CA the system trust store
+    # does not carry. Empty = verify against the system trust store.
+    bootstrap_ca_bundle: str = ""
+
+    # SHA-256 fingerprint of the certificate the gateway presents, as printed by
+    # `openssl x509 -noout -fingerprint -sha256` (colons optional, several
+    # allowed, comma- or space-separated). This is out-of-band pinning: the
+    # fingerprint travels with the bootstrap token, which already has to reach
+    # the operator out of band. Takes precedence over bootstrap_ca_bundle.
+    bootstrap_pin_sha256: str = ""
+
+    # Local-development opt-out: skip verification of the gateway's certificate
+    # at bootstrap. Named for what it costs, refused when deployment_env is
+    # production, and logged at WARNING every time it is used. Nothing else in
+    # the agent can reach an unverified TLS connection.
+    insecure_skip_bootstrap_tls_verify: bool = False
+
+    # Deployment environment, mirroring the backend's SecretGuard: only the exact
+    # value "production" arms the guards above, everything else (unset included)
+    # is development. Reads the platform-wide DEPLOYMENT_ENV as well as the
+    # agent-prefixed name, so a stack that already sets it needs no extra config.
+    deployment_env: str = Field(
+        default="dev",
+        validation_alias=AliasChoices("PROBE_AGENT_DEPLOYMENT_ENV", "DEPLOYMENT_ENV"),
+    )
 
     # TLS certificate paths
     ca_cert_path: str = "/certs/ca.pem"
@@ -100,4 +135,6 @@ class AgentSettings(BaseSettings):
     # "auto" suits R2 and is ignored by MinIO; AWS S3 needs the bucket region.
     s3_region: str = "auto"
 
-    model_config = {"env_prefix": "PROBE_AGENT_"}
+    # populate_by_name so fields carrying a validation_alias (deployment_env)
+    # can still be set by field name when AgentSettings is constructed directly.
+    model_config = {"env_prefix": "PROBE_AGENT_", "populate_by_name": True}

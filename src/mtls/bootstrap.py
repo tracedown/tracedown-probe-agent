@@ -5,6 +5,11 @@ CSR, and registers with the probe-scheduler.  The scheduler validates
 the bootstrap token (which already identifies this agent), signs the
 CSR with its internal CA, and returns the signed certificate + CA root.
 Subsequent starts skip registration if the cert files already exist.
+
+This one request is the agent's only unauthenticated moment, so the gateway is
+authenticated before the token leaves the process — by the system trust store,
+by an out-of-band pin, or by an explicit local-development opt-out. See
+``mtls/bootstrap_trust.py``.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from config import AgentSettings
+from mtls.bootstrap_trust import resolve_bootstrap_verify, verification_failure_hint
 from mtls.ca_pins import ca_fingerprints, write_pins
 
 log = logging.getLogger(__name__)
@@ -77,18 +83,31 @@ async def ensure_registered(settings: AgentSettings) -> None:
     agent_uri = f"https://{hostname}:{settings.port}"
 
     log.info("registering with scheduler at %s (agent URI: %s)", settings.scheduler_url, agent_uri)
-    async with httpx.AsyncClient(verify=False) as client:
-        resp = await client.post(
-            f"{settings.scheduler_url}/internal/agents/register",
-            json={
-                "bootstrapToken": settings.bootstrap_token,
-                "csrPem": csr_pem,
-                "agentUri": agent_uri,
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+
+    # Authenticate the gateway BEFORE the token is on the wire. Raises rather
+    # than falling back, so a configuration that cannot authenticate the peer
+    # fails registration instead of quietly leaking the token.
+    verify = await resolve_bootstrap_verify(settings)
+
+    try:
+        async with httpx.AsyncClient(verify=verify) as client:
+            resp = await client.post(
+                f"{settings.scheduler_url}/internal/agents/register",
+                json={
+                    "bootstrapToken": settings.bootstrap_token,
+                    "csrPem": csr_pem,
+                    "agentUri": agent_uri,
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.ConnectError as exc:
+        # A failed handshake here is the common upgrade symptom: the gateway is
+        # behind a certificate the agent cannot chain to. Say exactly what to set.
+        raise RuntimeError(
+            verification_failure_hint(settings.scheduler_url, exc)
+        ) from exc
 
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     cert_path.write_text(data["certificatePem"])
