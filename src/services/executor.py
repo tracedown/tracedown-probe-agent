@@ -13,10 +13,13 @@ are replaced with storage references.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,8 @@ from lacelang_executor import LaceExecutor
 from models.job import JobPayload
 from services import wire_metrics
 from storage.base import BodyStorage
+
+log = logging.getLogger(__name__)
 
 # Singleton executor — no root dir, no extensions, no prev tracking.
 # The agent receives fully self-contained scripts from the scheduler.
@@ -205,14 +210,90 @@ def _run_health_sync(token_url: str) -> str:
     return token
 
 
+def _now_iso() -> str:
+    """Timestamp in the format the Lace executor stamps results with (§9)."""
+    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return stamp.replace("+00:00", "Z")
+
+
+def _run_budget_timeout(
+    budget_ms: int, started_at: str, elapsed_ms: int
+) -> dict[str, Any]:
+    """A ProbeResult standing in for a run that outlived its budget.
+
+    Shaped like any other result (spec §9) so the ingestor persists it on the
+    normal path: `outcome=timeout` is the honest monitoring status, `calls` is
+    empty because the executor returns per-call records only when the whole run
+    completes, and the byte counters are zero for the same reason.
+
+    Deliberately a 200 with a result, never a 5xx: the scheduler treats an
+    agent error status as a fault of the agent, and this is not one — the
+    target did not answer inside the budget the scheduler itself set, which is
+    an observation about the target and must not be re-dispatched elsewhere.
+    """
+    return {
+        "outcome": "timeout",
+        "startedAt": started_at,
+        "endedAt": _now_iso(),
+        "elapsedMs": elapsed_ms,
+        "runVars": {},
+        "calls": [],
+        "actions": {},
+        "error": f"probe did not finish within its {budget_ms}ms run budget",
+        "ingressBytes": 0,
+        "egressBytes": 0,
+    }
+
+
 async def execute_probe(payload: JobPayload) -> dict[str, Any]:
     """Execute a probe job and return the raw ProbeResult dict.
 
     The executor already produces a spec-compliant result (§9).
     Forwarded as-is — the scheduler knows which job it dispatched.
+
+    ``requestTimeoutMs`` is a budget for the **whole run**, and the run budget
+    is enforced here because nothing below can enforce it: Lace's `timeout.ms`
+    is per call (spec §3.2) and the executor applies it one call at a time,
+    with no notion of a ceiling across the script. A three-call script under a
+    30s budget is therefore free to spend 90s down there — which is exactly the
+    window in which the scheduler gives up, records a timeout the target never
+    caused, and eventually dispatches the same service twice.
+
+    So the deadline is a wall clock over the whole execution. When it expires
+    the agent answers immediately with a `timeout` ProbeResult of its own,
+    inside the scheduler's own client timeout, and the run is settled by an
+    observation rather than by a transport failure.
+
+    Residual gap, worth stating plainly: the executor runs synchronously in a
+    thread and offers no cancellation, so an over-budget run keeps running
+    after the answer has been sent, until its own per-call timeouts expire. It
+    holds a pool slot (of `PROBE_AGENT_MAX_CONCURRENCY`) for that long and its
+    result is discarded. Nothing is double-probed — the scheduler is not asked
+    to retry — and the overshoot is bounded by the script's own timeouts, which
+    the gateway already caps at the Lace system ceiling.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_probe_pool, _run_sync, payload)
+    future = loop.run_in_executor(_probe_pool, _run_sync, payload)
+
+    budget_ms = payload.request_timeout_ms
+    if budget_ms is None:
+        # No budget dispatched (a scheduler that does not send the field yet):
+        # wait for the executor exactly as before.
+        return await future
+
+    started_at = _now_iso()
+    started_mono = time.monotonic()
+    try:
+        return await asyncio.wait_for(future, timeout=budget_ms / 1000.0)
+    except (asyncio.TimeoutError, TimeoutError):
+        elapsed_ms = int((time.monotonic() - started_mono) * 1000)
+        log.warning(
+            "probe exceeded its %dms run budget after %dms — answering with a timeout result; "
+            "the execution thread runs on until its per-call timeouts expire",
+            budget_ms,
+            elapsed_ms,
+        )
+        return _run_budget_timeout(budget_ms, started_at, elapsed_ms)
 
 
 async def run_health_script(token_url: str) -> str:
