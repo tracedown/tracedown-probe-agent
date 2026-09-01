@@ -58,6 +58,18 @@ _storage: BodyStorage | None = None
 # Empty leaves the executor's own generic default in place.
 _user_agent: str = ""
 
+# Target-egress policy for tenant probes, set by init_egress_policy(). The guard
+# (or None) is handed to the per-request executor so every connect — initial and
+# every redirect hop — is vetted against the blocked-range policy. force_verify
+# overrides a script's rejectInvalidCerts=false. Both default to off so nothing
+# changes unless the deployment opts in (production does, via config).
+#
+# Note: only the per-request *tenant* executor is guarded. The health-challenge
+# singleton below deliberately is not — it dials the gateway on the internal
+# network, exactly the kind of address the guard blocks.
+_before_connect = None  # type: ignore[var-annotated]
+_force_verify_tls: bool = False
+
 
 def init_storage(storage: BodyStorage) -> None:
     """Set the body storage backend. Called once at startup."""
@@ -69,6 +81,14 @@ def init_user_agent(user_agent: str) -> None:
     """Set the User-Agent probes send. Called once at startup."""
     global _user_agent
     _user_agent = user_agent
+
+
+def init_egress_policy(before_connect, force_verify_tls: bool) -> None:
+    """Set the tenant-probe egress guard and TLS-verify override. Called once
+    at startup. ``before_connect`` is an egress guard callable or None."""
+    global _before_connect, _force_verify_tls
+    _before_connect = before_connect
+    _force_verify_tls = force_verify_tls
 
 
 def _run_sync(payload: JobPayload) -> dict[str, Any]:
@@ -94,6 +114,10 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
             root=None,
             track_prev=False,
             extensions=active_extensions,
+            # Target-egress policy: vet every connect (initial + each redirect
+            # hop) and optionally enforce TLS verification, per deployment config.
+            before_connect=_before_connect,
+            force_verify_tls=_force_verify_tls,
         )
 
         # Spec §3.6 precedence: a script setting its own User-Agent still wins
