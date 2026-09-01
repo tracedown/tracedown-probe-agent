@@ -25,7 +25,12 @@ from mtls.ssl_context import build_server_context, certs_exist
 from routes.health import router as health_router
 from routes.probe import router as probe_router
 from services import wire_metrics
-from services.executor import init_probe_pool, init_storage, init_user_agent
+from services.executor import (
+    init_egress_policy,
+    init_probe_pool,
+    init_storage,
+    init_user_agent,
+)
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +69,18 @@ async def lifespan(app: FastAPI):
 
     init_user_agent(settings.user_agent)
     log.info("probe user-agent: %s", settings.user_agent)
+
+    # Target-egress policy for tenant probes (SSRF hardening). The socket-layer
+    # guard vets every connect against the blocked-range policy; the TLS check
+    # declines any script that disables certificate verification. Both are on in
+    # production, off in dev and the Compose/e2e stacks (which probe internal
+    # targets) unless PROBE_AGENT_EGRESS_GUARD / PROBE_AGENT_FORCE_TLS_VERIFY set.
+    egress_enabled = settings.egress_guard_enabled
+    reject_insecure_tls = settings.force_tls_verify_enabled
+    init_egress_policy(egress_enabled, reject_insecure_tls)
+    log.info("egress guard: %s; reject insecure-TLS scripts: %s",
+             "on" if egress_enabled else "off",
+             "on" if reject_insecure_tls else "off")
 
     if settings.bootstrap_token and settings.scheduler_url:
         await ensure_registered(settings)

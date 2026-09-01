@@ -19,14 +19,16 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from lacelang_executor import LaceExecutor
+from lacelang_validator.parser import parse as _parse_lace
 
 from models.job import JobPayload
-from services import wire_metrics
+from services import egress_guard, wire_metrics
 from storage.base import BodyStorage
 
 log = logging.getLogger(__name__)
@@ -58,6 +60,16 @@ _storage: BodyStorage | None = None
 # Empty leaves the executor's own generic default in place.
 _user_agent: str = ""
 
+# Target-egress policy for tenant probes, set by init_egress_policy(). When
+# _egress_enabled, the executor's run is wrapped in the socket-layer guard so
+# every connect (initial + each redirect hop) is vetted; when
+# _reject_insecure_tls, a script that turns TLS verification off is refused
+# before it runs. Both default off so nothing changes unless the deployment
+# opts in (production does, via config). Only tenant probes are guarded — the
+# health challenge (below) dials the internal gateway and stays unguarded.
+_egress_enabled: bool = False
+_reject_insecure_tls: bool = False
+
 
 def init_storage(storage: BodyStorage) -> None:
     """Set the body storage backend. Called once at startup."""
@@ -71,6 +83,20 @@ def init_user_agent(user_agent: str) -> None:
     _user_agent = user_agent
 
 
+def init_egress_policy(egress_enabled: bool, reject_insecure_tls: bool) -> None:
+    """Configure the tenant-probe egress policy. Called once at startup.
+
+    When ``egress_enabled`` the socket-layer guard is installed (idempotent) and
+    activated around each probe run. ``reject_insecure_tls`` makes the agent
+    decline any script that disables TLS certificate verification.
+    """
+    global _egress_enabled, _reject_insecure_tls
+    _egress_enabled = egress_enabled
+    _reject_insecure_tls = reject_insecure_tls
+    if egress_enabled:
+        egress_guard.install()
+
+
 def _run_sync(payload: JobPayload) -> dict[str, Any]:
     """Execute a Lace script and handle body storage.
 
@@ -80,6 +106,12 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
     bodies_dir = tempfile.mkdtemp(prefix="lace-bodies-")
 
     try:
+        # SEC-H6: in the hosted deployment a tenant must not be able to turn TLS
+        # certificate verification off. Inspect the parsed script and decline it
+        # before any wire activity, rather than reaching into the Lace runtime.
+        if _reject_insecure_tls and _script_disables_tls(payload.script):
+            return _tls_policy_refusal()
+
         # Determine which extensions to load based on variables
         active_extensions = ["laceNotifications"]
         variables = payload.variables or {}
@@ -112,7 +144,11 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
                 "recovery_message": "${s.name} in ${w.name}.${p.name} recovered",
             }
 
-        with wire_metrics.measure() as wire:
+        # Vet every connect the executor makes for this run against the egress
+        # policy. Scoped to the run only — body upload (S3) and other agent I/O
+        # below stay outside the guard, so internal traffic is never caught.
+        guard_ctx = egress_guard.active() if _egress_enabled else nullcontext()
+        with wire_metrics.measure() as wire, guard_ctx:
             result = executor.run(
                 script=payload.script,
                 vars=payload.variables if payload.variables else None,
@@ -214,6 +250,46 @@ def _now_iso() -> str:
     """Timestamp in the format the Lace executor stamps results with (§9)."""
     stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     return stamp.replace("+00:00", "Z")
+
+
+def _script_disables_tls(script: str) -> bool:
+    """True if the script sets `security.rejectInvalidCerts: false` on any call.
+
+    Parse failures are treated as "does not disable TLS": the script is invalid
+    and the executor will reject it on the normal path with a real diagnostic —
+    a parse error here must not be reported as a TLS-policy refusal.
+    """
+    try:
+        ast = _parse_lace(script)
+    except Exception:  # noqa: BLE001 — any parse failure defers to the executor
+        return False
+    return egress_guard.script_rejects_tls_verification(ast)
+
+
+def _tls_policy_refusal() -> dict[str, Any]:
+    """A ProbeResult (spec §9) for a script declined by TLS policy.
+
+    Shaped like any other result so the ingestor persists it on the normal
+    path: `outcome=failure` with an explanatory `error` and no calls, because
+    nothing was dispatched. A refusal, not an agent fault, so the route answers
+    200 with this body rather than a 5xx the scheduler would treat as its own.
+    """
+    now = _now_iso()
+    return {
+        "outcome": "failure",
+        "startedAt": now,
+        "endedAt": now,
+        "elapsedMs": 0,
+        "runVars": {},
+        "calls": [],
+        "actions": {},
+        "error": (
+            "script rejected: security.rejectInvalidCerts=false is not permitted "
+            "on this deployment (TLS certificate verification is mandatory)"
+        ),
+        "ingressBytes": 0,
+        "egressBytes": 0,
+    }
 
 
 def _run_budget_timeout(
