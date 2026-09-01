@@ -121,6 +121,28 @@ class AgentSettings(BaseSettings):
     # in a log: the bare default says only "some Tracedown".
     user_agent: str = DEFAULT_USER_AGENT
 
+    # --- Target-egress policy (SSRF hardening) -------------------------------
+    # The agent is the process that resolves DNS and opens the socket, so it is
+    # where a tenant probe that 30x-es to an internal address (or points DNS at
+    # one) is actually stopped. When enabled, a socket-layer guard
+    # (services/egress_guard.py) refuses loopback, link-local, carrier-grade
+    # NAT, RFC1918 / ULA private ranges, and internal hostnames — enforced at
+    # resolve/connect time so it covers the initial request and every redirect
+    # hop the executor follows internally.
+    #
+    # None = auto: on when DEPLOYMENT_ENV=production, off otherwise. This keeps
+    # dev and the Compose/e2e stacks (which probe internal test targets on the
+    # private network) working, while the hosted deployment enforces it. Set
+    # PROBE_AGENT_EGRESS_GUARD explicitly to force it on or off.
+    egress_guard: bool | None = None
+
+    # In the hosted deployment the agent refuses to run a tenant script that
+    # sets `security.rejectInvalidCerts: false` — a tenant must not be able to
+    # turn certificate checking off on our fleet. The Lace feature is untouched
+    # (it stays valid for self-hosters); the agent just declines the script.
+    # Same auto/None semantics as above.
+    force_tls_verify: bool | None = None
+
     # Body storage: "filesystem" or "s3"
     storage_backend: str = "filesystem"
     storage_dir: str = "/data/bodies"
@@ -138,3 +160,25 @@ class AgentSettings(BaseSettings):
     # populate_by_name so fields carrying a validation_alias (deployment_env)
     # can still be set by field name when AgentSettings is constructed directly.
     model_config = {"env_prefix": "PROBE_AGENT_", "populate_by_name": True}
+
+    @property
+    def is_production(self) -> bool:
+        """Only the exact value "production" arms the production-gated guards,
+        mirroring the backend's SecretGuard and the bootstrap trust checks."""
+        return self.deployment_env == "production"
+
+    @property
+    def egress_guard_enabled(self) -> bool:
+        """Whether to install the target-egress guard. Explicit setting wins;
+        otherwise on in production, off everywhere else."""
+        if self.egress_guard is not None:
+            return self.egress_guard
+        return self.is_production
+
+    @property
+    def force_tls_verify_enabled(self) -> bool:
+        """Whether to refuse scripts that disable TLS certificate verification.
+        Explicit setting wins; otherwise on in production, off elsewhere."""
+        if self.force_tls_verify is not None:
+            return self.force_tls_verify
+        return self.is_production
