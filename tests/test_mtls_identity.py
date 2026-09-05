@@ -43,11 +43,22 @@ def _ca(cn: str, key):
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False, content_commitment=False, key_encipherment=False,
+                data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True,
+                encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
         .sign(key, hashes.SHA256())
     )
 
 
 def _leaf(cn, key, ca_cert, ca_key, eku):
+    # Key identifiers as the gateway issues them (RFC 5280; enforced by 3.13's
+    # default context).
     now = datetime.datetime.now(datetime.timezone.utc)
     return (
         x509.CertificateBuilder()
@@ -58,6 +69,10 @@ def _leaf(cn, key, ca_cert, ca_key, eku):
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=30))
         .add_extension(x509.ExtendedKeyUsage(eku), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()), critical=False
+        )
         .sign(ca_key, hashes.SHA256())
     )
 

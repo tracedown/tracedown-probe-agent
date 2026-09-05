@@ -154,6 +154,14 @@ def ca_bundle_context(bundle_path: str) -> ssl.SSLContext:
         )
     ctx = ssl.create_default_context(cafile=str(path))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Python 3.13 turned on OpenSSL's X509_STRICT in the default context: the
+    # chain must carry RFC 5280 key identifiers and the CA a keyUsage with
+    # keyCertSign. A public CA always does (system_trust_context keeps the
+    # flag); an operator's private CA often does not — roots minted by older
+    # tooling, including the Tracedown gateway's own before it issued them —
+    # and the operator handed us this bundle precisely to trust it. The bundle
+    # is the trust decision; strictness about its metadata is not.
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
     return ctx
 
 

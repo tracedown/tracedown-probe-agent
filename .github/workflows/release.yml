@@ -48,7 +48,7 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Build sdist and wheel
         if: steps.check.outputs.exists == 'false'
