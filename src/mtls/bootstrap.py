@@ -30,6 +30,20 @@ from mtls.ca_pins import ca_fingerprints, write_pins
 log = logging.getLogger(__name__)
 
 
+
+def advertised_agent_uri(settings: AgentSettings) -> str:
+    """The URI the scheduler will dial this agent on.
+
+    ``https://`` — the scheduler dials it over mutual TLS. The agent's
+    certificate is what authorizes those requests, so the advertised scheme
+    must be https or the scheduler would connect in the clear. The host is
+    ``PROBE_AGENT_ADVERTISED_HOST`` when set, else the machine's own FQDN.
+    """
+    import socket
+
+    host = settings.advertised_host.strip() or socket.getfqdn()
+    return f"https://{host}:{settings.port}"
+
 def generate_keypair() -> rsa.RSAPrivateKey:
     """Generate a fresh RSA-4096 private key."""
     log.info("generating RSA-4096 keypair")
@@ -75,12 +89,7 @@ async def ensure_registered(settings: AgentSettings) -> None:
 
     csr_pem = build_csr_pem(private_key)
 
-    import socket
-    hostname = socket.getfqdn()
-    # https:// — the scheduler dials this URI over mutual TLS. The agent's
-    # certificate (issued below) is what authorizes those requests, so the
-    # advertised scheme must be https or the scheduler would connect in the clear.
-    agent_uri = f"https://{hostname}:{settings.port}"
+    agent_uri = advertised_agent_uri(settings)
 
     log.info("registering with scheduler at %s (agent URI: %s)", settings.scheduler_url, agent_uri)
 

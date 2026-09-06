@@ -72,6 +72,14 @@ Despite its name, `PROBE_AGENT_SCHEDULER_URL` is the **api-gateway's** base
 URL — registration and certificate renewal are served there, not by the
 scheduler.
 
+The agent registers the address the scheduler dials it on as
+`https://<host>:<PROBE_AGENT_PORT>`, where `<host>` is the machine's own FQDN
+unless `PROBE_AGENT_ADVERTISED_HOST` names the one that actually resolves from
+the scheduler. On Railway the container's FQDN is its container id, which
+nothing else resolves, while `${{RAILWAY_PRIVATE_DOMAIN}}` is the name the
+scheduler can dial; bind `PROBE_AGENT_HOST=::` there too, so the agent answers
+on IPv6 as well as IPv4 (older Railway environments are IPv6-only).
+
 Configuration is environment-driven and prefixed `PROBE_AGENT_` — the full
 reference is in the [documentation](https://tracedown.dev/install/agents/).
 
