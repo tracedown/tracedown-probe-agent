@@ -123,6 +123,27 @@ switching an agent from the internal `http://` URL to the public one.
 so a stack that already sets it platform-wide needs nothing extra. Only the exact
 value `production` arms these guards; unset means development.
 
+## Dependencies
+
+Dependencies are declared as floors in `pyproject.toml` and resolved into
+`uv.lock`, which is committed. The two serve different purposes:
+`pip install -e ".[dev]"` follows the floors, which is what the CI matrix tests
+across every supported Python; the Docker image installs the exact, hash-pinned
+set from the lock, so an image built today contains what the lock was tested
+with rather than whatever PyPI holds that day.
+
+Refreshing the lock needs [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv lock --upgrade-package lacelang-executor  # move one dependency
+uv lock --upgrade                            # move everything, within declared ranges
+uv lock                                      # re-resolve after editing pyproject.toml
+uv lock --check                              # fails if the lock is stale — CI runs this
+```
+
+CI runs `uv lock --check` whenever `pyproject.toml` or `uv.lock` changes, so a
+dependency edit without a lock refresh fails the PR.
+
 ## Testing
 
 ```bash
