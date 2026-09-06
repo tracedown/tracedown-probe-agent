@@ -1,27 +1,40 @@
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "tracedown-probe-agent"
-version = "0.2.2"
+version = "0.3.0"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.34.0",
-    "httpx>=0.28.0",
-    "cryptography>=44.0.0",
-    "pydantic>=2.11.0",
-    "pydantic-settings>=2.8.0",
-    "boto3>=1.35.0",
-    "lacelang-validator>=0.1.4,<0.2",
-    "lacelang-executor>=0.1.5,<0.2",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.4",
+    "httpx>=0.28.1",
+    "cryptography>=50.0.1",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "boto3>=1.43.89",
+    "lacelang-validator>=0.2.0,<0.3",
+    "lacelang-executor>=0.2.0,<0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.25.0",
-    "httpx>=0.28.0",
-    "ruff>=0.16,<0.17",
+    "pytest>=9.1.1",
+    "ruff>=0.16.6,<0.17",
 ]
+
+# The agent is an application, not a library: it runs from src/ (PYTHONPATH=src
+# in the image, `pythonpath` below for the tests), so an install contributes
+# nothing but its dependencies. Declaring no packages keeps `pip install -e .`
+# from dropping generic top-level modules (main, config, routes, …) into the
+# environment.
+[tool.setuptools]
+packages = []
+
+[tool.ruff]
+target-version = "py311"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

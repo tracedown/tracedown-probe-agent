@@ -33,7 +33,7 @@ def _key():
 
 def _ca(cn: str, key):
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     return (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -59,7 +59,7 @@ def _ca(cn: str, key):
 def _leaf(cn, key, ca_cert, ca_key, eku):
     # Key identifiers as the gateway issues them (RFC 5280; enforced by 3.13's
     # default context).
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     return (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))
