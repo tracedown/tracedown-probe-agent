@@ -20,7 +20,7 @@ import base64
 import logging
 import os
 import ssl
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -47,7 +47,7 @@ def _cert_not_after(cert_path: Path) -> datetime | None:
     # not_valid_after_utc is aware; not_valid_after (older cryptography) is naive UTC.
     not_after = getattr(cert, "not_valid_after_utc", None)
     if not_after is None:
-        not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        not_after = cert.not_valid_after.replace(tzinfo=UTC)
     return not_after
 
 
@@ -191,7 +191,7 @@ async def renew_if_needed(
         if not_after is None:
             return
 
-        days_left = (not_after - datetime.now(timezone.utc)).total_seconds() / 86400
+        days_left = (not_after - datetime.now(UTC)).total_seconds() / 86400
         if days_left > settings.renew_before_days:
             log.debug("certificate has %.1f days left — no renewal needed", days_left)
             return

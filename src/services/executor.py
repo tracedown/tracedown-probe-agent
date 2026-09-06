@@ -20,7 +20,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -248,7 +248,7 @@ def _run_health_sync(token_url: str) -> str:
 
 def _now_iso() -> str:
     """Timestamp in the format the Lace executor stamps results with (§9)."""
-    stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
     return stamp.replace("+00:00", "Z")
 
 
@@ -361,7 +361,7 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
     started_mono = time.monotonic()
     try:
         return await asyncio.wait_for(future, timeout=budget_ms / 1000.0)
-    except (asyncio.TimeoutError, TimeoutError):
+    except TimeoutError:
         elapsed_ms = int((time.monotonic() - started_mono) * 1000)
         log.warning(
             "probe exceeded its %dms run budget after %dms — answering with a timeout result; "

@@ -33,7 +33,7 @@ def _key():
 
 def _self_signed(cn: str, key) -> x509.Certificate:
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     return (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -59,7 +59,7 @@ def _self_signed(cn: str, key) -> x509.Certificate:
 def _signed_by(cn: str, key, ca_cert: x509.Certificate, ca_key) -> x509.Certificate:
     # Mirrors what the gateway's CaService issues: the key identifiers RFC 5280
     # requires, which Python 3.13's default context enforces (X509_STRICT).
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     return (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))

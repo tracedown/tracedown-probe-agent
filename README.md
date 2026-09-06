@@ -10,7 +10,7 @@ agent; it is driven by `tracedown-core-backend`.
 📖 **Documentation: [tracedown.dev](https://tracedown.dev)** —
 see [Probe Agents](https://tracedown.dev/install/agents/).
 
-Stack: Python 3.10+, FastAPI, uvicorn, httpx, and the Lace validator and
+Stack: Python 3.11+, FastAPI, uvicorn, httpx, and the Lace validator and
 executor.
 
 ## How it works
