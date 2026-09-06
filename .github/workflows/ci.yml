@@ -19,9 +19,10 @@ jobs:
       - name: Not WIP
         run: echo "Running checks."
 
-  # Detects what changed so downstream jobs self-skip. Two flags:
+  # Detects what changed so downstream jobs self-skip. Three flags:
   #   - code:   src/, tests/ or pyproject.toml → lint + tests
-  #   - docker: src/, Dockerfile or pyproject.toml → image build
+  #   - docker: src/, Dockerfile, pyproject.toml or uv.lock → image build
+  #   - lock:   pyproject.toml or uv.lock → lock freshness check
   changed-paths:
     name: Detect changed paths
     needs: [wip-gate]
@@ -29,6 +30,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       docker: ${{ steps.filter.outputs.docker }}
+      lock: ${{ steps.filter.outputs.lock }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -49,14 +51,44 @@ jobs:
             echo "No src/tests/pyproject changes — lint + tests skipped."
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
-          DOCKER=$(git diff --name-only "$BASE"...HEAD -- src/ Dockerfile pyproject.toml)
+          DOCKER=$(git diff --name-only "$BASE"...HEAD -- src/ Dockerfile pyproject.toml uv.lock)
           if [ -n "$DOCKER" ]; then
             echo "Packaging-relevant changes detected (image build will run):"; echo "$DOCKER"
             echo "docker=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No src/Dockerfile/pyproject changes — image build skipped."
+            echo "No src/Dockerfile/pyproject/uv.lock changes — image build skipped."
             echo "docker=false" >> "$GITHUB_OUTPUT"
           fi
+          LOCK=$(git diff --name-only "$BASE"...HEAD -- pyproject.toml uv.lock)
+          if [ -n "$LOCK" ]; then
+            echo "Dependency declarations changed (lock check will run):"; echo "$LOCK"
+            echo "lock=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No pyproject/uv.lock changes — lock check skipped."
+            echo "lock=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The image installs from uv.lock, so a dependency edit that does not refresh
+  # the lock changes nothing about what ships. `uv lock --check` fails when the
+  # lock no longer matches pyproject.toml. The matrix below still installs from
+  # pyproject.toml directly — that validates the declared floors, while the lock
+  # validates the image.
+  lock:
+    name: Lock is current
+    needs: [wip-gate, changed-paths]
+    if: ${{ needs.changed-paths.outputs.lock == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.0.1  # no floating major tag is published
+        with:
+          version: "0.12.10"
+
+      - name: uv lock --check
+        run: uv lock --check
 
   lint:
     name: Lint
