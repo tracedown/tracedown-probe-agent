@@ -95,6 +95,12 @@ class AgentSettings(BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8443
+    # The host the scheduler dials this agent on, registered as
+    # ``https://<advertised_host>:<port>``. Empty means the machine's own FQDN,
+    # which is right wherever that name resolves from the scheduler (a Compose
+    # network, a VM with DNS). On a platform that hands out a different
+    # reachable name — Railway's ``<service>.railway.internal`` — set it here.
+    advertised_host: str = ""
     log_level: str = "info"
 
     # Max concurrent probe executions. Probes run synchronously in a thread
