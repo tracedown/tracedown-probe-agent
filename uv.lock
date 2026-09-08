@@ -706,7 +706,7 @@ wheels = [
 
 [[package]]
 name = "tracedown-probe-agent"
-version = "0.3.3"
+version = "0.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
