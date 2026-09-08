@@ -75,10 +75,14 @@ scheduler.
 The agent registers the address the scheduler dials it on as
 `https://<host>:<PROBE_AGENT_PORT>`, where `<host>` is the machine's own FQDN
 unless `PROBE_AGENT_ADVERTISED_HOST` names the one that actually resolves from
-the scheduler. On Railway the container's FQDN is its container id, which
-nothing else resolves, while `${{RAILWAY_PRIVATE_DOMAIN}}` is the name the
-scheduler can dial; bind `PROBE_AGENT_HOST=::` there too, so the agent answers
-on IPv6 as well as IPv4 (older Railway environments are IPv6-only).
+the scheduler. The certificate the gateway issues names only the agent's slug,
+and the scheduler verifies the hostname it dials against that name, so the
+advertised host must be the slug itself and the network must resolve it —
+on a Railway deployment, name the service after the slug: the container's own
+FQDN is its container id, which nothing resolves, while the bare service name
+resolves through the scheduler's DNS search domain. Bind `PROBE_AGENT_HOST`
+to `0.0.0.0` there: the private network is dual-stack and the scheduler
+connects over IPv4 first, and a `::` bind was observed to answer IPv6 only.
 
 Configuration is environment-driven and prefixed `PROBE_AGENT_` — the full
 reference is in the [documentation](https://tracedown.dev/install/agents/).
