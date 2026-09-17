@@ -72,17 +72,50 @@ Despite its name, `PROBE_AGENT_SCHEDULER_URL` is the **api-gateway's** base
 URL — registration and certificate renewal are served there, not by the
 scheduler.
 
-The agent registers the address the scheduler dials it on as
-`https://<host>:<PROBE_AGENT_PORT>`, where `<host>` is the machine's own FQDN
-unless `PROBE_AGENT_ADVERTISED_HOST` names the one that actually resolves from
-the scheduler. The certificate the gateway issues names only the agent's slug,
-and the scheduler verifies the hostname it dials against that name, so the
-advertised host must be the slug itself and the network must resolve it —
-on a Railway deployment, name the service after the slug: the container's own
-FQDN is its container id, which nothing resolves, while the bare service name
-resolves through the scheduler's DNS search domain. Bind `PROBE_AGENT_HOST`
-to `0.0.0.0` there: the private network is dual-stack and the scheduler
-connects over IPv4 first, and a `::` bind was observed to answer IPv6 only.
+## The address the agent advertises
+
+At enrolment the agent registers the address the scheduler dials it on. What it
+advertises and what it binds are separate:
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `PROBE_AGENT_ADVERTISED_HOST` | the machine's own FQDN | The host in the registered address |
+| `PROBE_AGENT_ADVERTISED_PORT` | `PROBE_AGENT_PORT` | The port in the registered address (1–65535) |
+| `PROBE_AGENT_PORT` | `8443` | The port the agent listens on |
+| `PROBE_AGENT_HOST` | `0.0.0.0` | The interface the agent binds |
+
+So the registered address is
+`https://<PROBE_AGENT_ADVERTISED_HOST>:<PROBE_AGENT_ADVERTISED_PORT>`, falling
+back to the machine's own FQDN and the listen port. The host must be the name
+that actually resolves from the scheduler, and the certificate the gateway
+issues names both the agent's slug and that host (gateway 0.4.32 and later; an
+older gateway names the slug only, so there the advertised host has to be the
+slug itself). On a Railway deployment, name the service after the slug: the
+container's own FQDN is its container id, which nothing resolves, while the
+bare service name resolves through the scheduler's DNS search domain. Bind
+`PROBE_AGENT_HOST` to `0.0.0.0` there: the private network is dual-stack and
+the scheduler connects over IPv4 first, and a `::` bind was observed to answer
+IPv6 only.
+
+Set `PROBE_AGENT_ADVERTISED_PORT` when something in front of the agent accepts
+the connection on one port and forwards it to another — an L4 TCP proxy, a
+port-mapping NAT, a published container port. The agent keeps listening on
+`PROBE_AGENT_PORT` and registers the port the scheduler can actually reach:
+
+```bash
+docker run -d --name tracedown-agent -p 20443:8443 \
+  -e PROBE_AGENT_BOOTSTRAP_TOKEN=<one-time token> \
+  -e PROBE_AGENT_SCHEDULER_URL=https://tracedown.example.com \
+  -e PROBE_AGENT_ADVERTISED_HOST=agent-eu.example.com \
+  -e PROBE_AGENT_ADVERTISED_PORT=20443 \
+  -e DEPLOYMENT_ENV=production \
+  tracedown-agent
+```
+
+The proxy has to pass the TLS connection through untouched: the agent's
+certificate is the identity the scheduler verifies and the client certificate
+is how the agent authorizes the scheduler, so a terminating (L7) proxy breaks
+both. Leave the variable unset whenever the path is direct.
 
 Configuration is environment-driven and prefixed `PROBE_AGENT_` — the full
 reference is in the [documentation](https://tracedown.dev/install/agents/).

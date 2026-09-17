@@ -7,7 +7,7 @@ environment automatically by pydantic-settings.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -96,11 +96,20 @@ class AgentSettings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8443
     # The host the scheduler dials this agent on, registered as
-    # ``https://<advertised_host>:<port>``. Empty means the machine's own FQDN,
-    # which is right wherever that name resolves from the scheduler (a Compose
-    # network, a VM with DNS). On a platform that hands out a different
-    # reachable name — Railway's ``<service>.railway.internal`` — set it here.
+    # ``https://<advertised_host>:<advertised_port or port>``. Empty means the
+    # machine's own FQDN, which is right wherever that name resolves from the
+    # scheduler (a Compose network, a VM with DNS). On a platform that hands out
+    # a different reachable name — Railway's ``<service>.railway.internal`` —
+    # set it here.
     advertised_host: str = ""
+    # The port the scheduler reaches this agent on, when it is not the port the
+    # agent listens on. An L4 TCP proxy or a port-mapping NAT in front of the
+    # agent terminates the connection on one port and forwards it to ``port``,
+    # so the registered URI has to name the externally reachable one or the
+    # scheduler dials a port nothing answers on. Unset (the default) registers
+    # the listen port, which is right whenever the path is direct. This never
+    # changes what the agent binds — that is always ``port``.
+    advertised_port: int | None = Field(default=None, ge=1, le=65535)
     log_level: str = "info"
 
     # Max concurrent probe executions. Probes run synchronously in a thread
@@ -166,6 +175,19 @@ class AgentSettings(BaseSettings):
     # populate_by_name so fields carrying a validation_alias (deployment_env)
     # can still be set by field name when AgentSettings is constructed directly.
     model_config = {"env_prefix": "PROBE_AGENT_", "populate_by_name": True}
+
+    @field_validator("advertised_port", mode="before")
+    @classmethod
+    def _blank_advertised_port_is_unset(cls, value):
+        """An empty value means "not set", as it does for ``advertised_host``.
+
+        A stack that declares the variable and leaves it empty — the ordinary
+        Compose shape — would otherwise fail validation and the agent would
+        refuse to start over a setting nobody asked for.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def is_production(self) -> bool:

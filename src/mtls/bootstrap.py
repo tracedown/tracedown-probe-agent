@@ -38,11 +38,19 @@ def advertised_agent_uri(settings: AgentSettings) -> str:
     certificate is what authorizes those requests, so the advertised scheme
     must be https or the scheduler would connect in the clear. The host is
     ``PROBE_AGENT_ADVERTISED_HOST`` when set, else the machine's own FQDN.
+
+    The port is ``PROBE_AGENT_ADVERTISED_PORT`` when set, else the port the
+    agent listens on. They differ whenever something in front of the agent
+    accepts the connection on one port and forwards it to another — an L4 TCP
+    proxy, a port-mapping NAT — where advertising the listen port registers an
+    address the scheduler cannot reach. It is the single place the registered
+    address is built, so every enrolment spells it the same way.
     """
     import socket
 
     host = settings.advertised_host.strip() or socket.getfqdn()
-    return f"https://{host}:{settings.port}"
+    port = settings.advertised_port or settings.port
+    return f"https://{host}:{port}"
 
 def generate_keypair() -> rsa.RSAPrivateKey:
     """Generate a fresh RSA-4096 private key."""
