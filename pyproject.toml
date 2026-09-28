@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tracedown-probe-agent"
-version = "0.3.3"
+version = "0.3.4"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
@@ -15,8 +15,8 @@ dependencies = [
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "boto3>=1.43.89",
-    "lacelang-validator>=0.2.0,<0.3",
-    "lacelang-executor>=0.2.0,<0.3",
+    "lacelang-validator>=0.2.1,<0.3",
+    "lacelang-executor>=0.2.1,<0.3",
 ]
 
 [project.optional-dependencies]

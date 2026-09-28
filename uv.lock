@@ -367,23 +367,23 @@ wheels = [
 
 [[package]]
 name = "lacelang-executor"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lacelang-validator" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/93/0532859b0084aea5323c871d48aada1cf1868c4c41620b8874c0c3ebed06/lacelang_executor-0.2.0.tar.gz", hash = "sha256:f8ee8b4543dd7d7fdc1e27bca77de0531d95c9eb947fd11c9d487540085c66e4", size = 73441, upload-time = "2026-09-06T11:55:13.157Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/ec/d3fe88b6e7d10b362f0a6cd2670e58fe074bc1e5a6305975124a41afbf05/lacelang_executor-0.2.1.tar.gz", hash = "sha256:411e6c72c057295ccf0a01189e7e98d253c179b85c02011f81911f0febe1157c", size = 73927, upload-time = "2026-09-25T13:42:01.875Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/f0/48e2563a3b9a2916e2279b4fa5c8b11180626d2fa2cd445235fc1f9b89c5/lacelang_executor-0.2.0-py3-none-any.whl", hash = "sha256:5baf62cd97e1194757f0a712bd2e0737d6c3c172944425fadcde8f25e9e8fcc9", size = 75924, upload-time = "2026-09-06T11:55:11.854Z" },
+    { url = "https://files.pythonhosted.org/packages/95/1b/362b61cc6f31cf4f9ba436b309be845378713cf5e0acddaf475b8154c520/lacelang_executor-0.2.1-py3-none-any.whl", hash = "sha256:5d1666bdfa7cd65b34fb2794bf319106268b70b721ccb491c7a3f4a5d4ecd97b", size = 76488, upload-time = "2026-09-25T13:42:00.632Z" },
 ]
 
 [[package]]
 name = "lacelang-validator"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/48/a6/84d5e811cb8eac094f79f37ca4da47ef0c3ec7860e298565aeca80a9af58/lacelang_validator-0.2.0.tar.gz", hash = "sha256:bd3c0505b404541f8f55995e462a8a248c4c6251ac6aaa773bbc1d41a43ef07d", size = 28171, upload-time = "2026-09-06T11:47:22.002Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/bd/080d32ac3662d0e14970c30c5a1ae3bca1504332d426f55f93b6e20b4db7/lacelang_validator-0.2.1.tar.gz", hash = "sha256:39bb95e944980aea34b3cbd2099cce304be4dd82aed4d8ed96e91b1ac6a098ea", size = 28212, upload-time = "2026-09-25T13:20:10.331Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/95/8427d3afca115d1ce91d48be4807fb2e364e05c48c9a547248aabc57f4ce/lacelang_validator-0.2.0-py3-none-any.whl", hash = "sha256:6ce3cb9da444cddad5798e1fae25c52999efe6250bef5956ce9ea5c02f0650f9", size = 24954, upload-time = "2026-09-06T11:47:20.465Z" },
+    { url = "https://files.pythonhosted.org/packages/77/4b/94ee1563d496ded0aeffc7826c8a3c6c802fe4b2e81de710f75a5900f226/lacelang_validator-0.2.1-py3-none-any.whl", hash = "sha256:6a231a9e5ca4c0c9e718700c425e58e34068c31e023f47bd01b6bafdf508ef46", size = 25008, upload-time = "2026-09-25T13:20:09.041Z" },
 ]
 
 [[package]]
@@ -706,7 +706,7 @@ wheels = [
 
 [[package]]
 name = "tracedown-probe-agent"
-version = "0.3.3"
+version = "0.3.4"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
@@ -732,8 +732,8 @@ requires-dist = [
     { name = "cryptography", specifier = ">=50.0.1" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "lacelang-executor", specifier = ">=0.2.0,<0.3" },
-    { name = "lacelang-validator", specifier = ">=0.2.0,<0.3" },
+    { name = "lacelang-executor", specifier = ">=0.2.1,<0.3" },
+    { name = "lacelang-validator", specifier = ">=0.2.1,<0.3" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
