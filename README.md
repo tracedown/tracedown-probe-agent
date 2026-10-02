@@ -23,7 +23,14 @@ A dispatch may also carry a **run budget** (`requestTimeoutMs`, milliseconds) �
 a wall clock over the whole script rather than a per-call timeout. When it
 expires the agent stops waiting and answers with a `timeout` result of its own,
 so the scheduler learns the run is over from the agent instead of guessing. A
-dispatch without one runs to whatever the script's own per-call timeouts allow.
+dispatch without a run budget runs to whatever the script's own per-call timeouts
+allow. The timeout result carries a `timeout` notification event, just as a result
+from a completed executor run would, so the outage itself is alerted on and not
+only the recovery after it — unless the run never started because the agent's
+probe pool was full, which is the agent's problem and raises no alert. The same
+goes for a script the agent refuses to run (TLS verification turned off where
+`PROBE_AGENT_FORCE_TLS_VERIFY` requires it): every refusal carries an `error`
+event until the script is fixed.
 
 The scheduler **dials the agent** — so the agent must be reachable inbound from
 the scheduler. An agent behind NAT with no inbound route will enrol successfully
