@@ -53,8 +53,9 @@ def init_probe_pool(max_workers: int) -> None:
 
 # Opens every message the agent composes itself. A dispatcher-side template:
 # the names are filled in there, the agent is told none of them. Rendered for
-# the run-level timeout and refusal events below; the recovery text that uses
-# it too is composed by the dispatcher from its own default instead.
+# the run-level timeout and refusal events below and for the per-call timeout
+# default handed to laceNotifications; the recovery text that uses it too is
+# composed by the dispatcher from its own default instead.
 _SERVICE_PREFIX = "${s.name} in ${w.name}.${p.name}"
 
 # Lace script used for health challenge-response.
@@ -144,13 +145,25 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
         if payload.allow_body_save:
             executor._config["result"]["bodies"] = {"dir": bodies_dir}
 
+        # Message defaults for the events the extensions emit, as dispatcher-side
+        # templates. The bundled per-call timeout text is a bare "Request timed
+        # out", which names neither the service nor the call — and a `text`
+        # event's value is the template the dispatcher renders. The run-level
+        # timeout below opens the same way, so both kinds of timeout read alike.
+        # No "after Nms": the dispatcher's `${ms}` is the whole run's elapsed
+        # time when the call has no response, which is wrong past one call.
+        # `setdefault`, so an operator's own lace.config value wins.
+        extension_config = executor._config.setdefault("extensions", {})
+        extension_config.setdefault("laceNotifications", {}).setdefault(
+            "timeout_message", f"{_SERVICE_PREFIX} call to ${{url}} timed out"
+        )
         if "laceEmitRecovery" in active_extensions:
             # The dispatcher composes the recovery message itself (it alone
             # knows the downtime), so this text is only what the raw result
             # shows; it is still shaped like the other events, for the reader.
-            executor._config.setdefault("extensions", {})["laceEmitRecovery"] = {
-                "recovery_message": f"{_SERVICE_PREFIX} recovered",
-            }
+            extension_config.setdefault("laceEmitRecovery", {}).setdefault(
+                "recovery_message", f"{_SERVICE_PREFIX} recovered"
+            )
 
         # Vet every connect the executor makes for this run against the egress
         # policy. Scoped to the run only — body upload (S3) and other agent I/O
