@@ -26,11 +26,14 @@ so the scheduler learns the run is over from the agent instead of guessing. A
 dispatch without a run budget runs to whatever the script's own per-call timeouts
 allow. The timeout result carries a `timeout` notification event, just as a result
 from a completed executor run would, so the outage itself is alerted on and not
-only the recovery after it — unless the run never started because the agent's
-probe pool was full, which is the agent's problem and raises no alert. The same
-goes for a script the agent refuses to run (TLS verification turned off where
-`PROBE_AGENT_FORCE_TLS_VERIFY` requires it): every refusal carries an `error`
-event until the script is fixed.
+only the recovery after it. The same goes for a script the agent refuses to run
+(TLS verification turned off where `PROBE_AGENT_FORCE_TLS_VERIFY` requires it):
+every refusal carries an `error` event until the script is fixed.
+
+A run that never started because the agent's probe pool was full is the agent's
+problem, not the target's. It is not answered with a result at all but declined
+with a 503, which the scheduler may hand to another agent, or record as a
+skipped tick with its own alert — never as a status the service did not have.
 
 The scheduler **dials the agent** — so the agent must be reachable inbound from
 the scheduler. An agent behind NAT with no inbound route will enrol successfully

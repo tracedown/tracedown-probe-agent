@@ -141,9 +141,7 @@ def test_budget_timeout_carries_a_timeout_notification() -> None:
     extension rule that announces a timeout never ran for it. The agent has to
     raise the event itself, or the outage is silent and the next success is
     announced as a recovery from nothing."""
-    result = executor_service._run_budget_timeout(
-        30_000, "2026-05-01T12:00:00.000Z", 29_999, started=True
-    )
+    result = executor_service._run_budget_timeout(30_000, "2026-05-01T12:00:00.000Z", 29_999)
 
     # The exact shape laceNotifications emits (lace-extensions.md §12),
     # run-level like the recovery event because there is no call record to
@@ -174,27 +172,20 @@ def test_budget_timeout_carries_a_timeout_notification() -> None:
     assert result["error"] == "probe did not finish within its 30000ms run budget"
 
 
-def test_run_the_pool_never_started_raises_no_alert() -> None:
-    """A job that expired in the queue says nothing about the target: still a
-    timeout, but the error names the agent and there is no event to alert on."""
-    result = executor_service._run_budget_timeout(
-        30_000, "2026-05-01T12:00:00.000Z", 30_001, started=False
-    )
-    assert result["outcome"] == "timeout"
-    assert result["actions"] == {}
-    assert result["error"] == (
-        "probe did not start within its 30000ms run budget (agent at capacity)"
-    )
-
-
-def test_queued_behind_a_full_pool_is_not_blamed_on_the_target() -> None:
+def test_queued_behind_a_full_pool_is_refused_not_blamed_on_the_target(
+    client: TestClient,
+) -> None:
     """Over-budget runs keep their pool slot, so a saturated pool can hold a
-    job past its whole budget without starting it. That run must not reach
-    the service's owner as 'your target timed out'."""
+    job past its whole budget without starting it. That is not a result of
+    any kind — not 'your target timed out', nor an error counted against the
+    service — but this agent declining the job: a 503 the scheduler may hand
+    to another agent, or record as a skipped tick. The queued job never runs."""
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-probe")
     release = threading.Event()
+    runs: list[Any] = []
 
-    def hog(_payload: JobPayload) -> dict[str, Any]:
+    def hog(payload: JobPayload | None) -> dict[str, Any]:
+        runs.append(payload)
         release.wait(10)
         return dict(QUICK_RESULT)
 
@@ -202,42 +193,22 @@ def test_queued_behind_a_full_pool_is_not_blamed_on_the_target() -> None:
         with patch.object(executor_service, "_probe_pool", pool), patch(
             "services.executor._run_sync", hog
         ):
+            # Occupy the only worker, then dispatch a run that will queue.
+            pool.submit(hog, None)
+            time.sleep(0.1)
+            with pytest.raises(executor_service.AgentAtCapacity) as refused:
+                asyncio.run(executor_service.execute_probe(_payload(requestTimeoutMs=1_000)))
+            assert "did not start within its 1000ms run budget" in str(refused.value)
 
-            async def scenario() -> dict[str, Any]:
-                loop = asyncio.get_running_loop()
-                # Occupy the only worker, then dispatch a run that will queue.
-                loop.run_in_executor(pool, hog, None)
-                await asyncio.sleep(0.1)
-                return await executor_service.execute_probe(_payload(requestTimeoutMs=1_000))
-
-            result = asyncio.run(scenario())
+            resp = client.post("/probe", json={"script": SCRIPT, "requestTimeoutMs": 1_000})
     finally:
         release.set()
         pool.shutdown(wait=True)
 
-    assert result["outcome"] == "timeout"
-    assert result["actions"] == {}
-    assert "did not start" in result["error"]
-
-
-def test_budget_timeout_event_reaches_the_route(client: TestClient, probe_pool: None) -> None:
-    """The event survives the whole path the scheduler sees: execute_probe,
-    the route, JSON encoding (`scope` as null)."""
-
-    def slow(_payload: JobPayload) -> dict[str, Any]:
-        time.sleep(5)
-        return dict(QUICK_RESULT)
-
-    with patch("services.executor._run_sync", slow):
-        resp = client.post("/probe", json={"script": SCRIPT, "requestTimeoutMs": 1_000})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["outcome"] == "timeout"
-    (event,) = body["actions"]["notifications"]
-    assert event["trigger"] == "timeout"
-    assert event["scope"] is None
-    assert "within 1000ms" in event["notification"]["value"]
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "agent_at_capacity"
+    # Only the hog ran: the queued jobs were dropped, never executed late.
+    assert runs == [None]
 
 
 def test_run_inside_the_budget_is_returned_untouched(probe_pool: None) -> None:
