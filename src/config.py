@@ -4,25 +4,41 @@ All settings are prefixed with ``PROBE_AGENT_`` and read from the
 environment automatically by pydantic-settings.
 """
 
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _package_version
+import tomllib
+from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
+#: The project file beside `src/`. The agent is an application that declares
+#: no packages, so the running code always lives in `src/` next to it — in the
+#: image, in a checkout, under the tests — and its `version` is the version of
+#: the code by construction. Installed distribution metadata is not consulted:
+#: it describes whatever was last installed, which a stale editable install or
+#: a leftover egg-info can leave behind a bump.
+_PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
-def _agent_version() -> str:
-    """Installed package version, or a placeholder when the agent runs from a
-    source tree that was never installed (tests, ``python -m``)."""
+
+def _agent_version(pyproject: Path = _PYPROJECT) -> str:
+    """The version declared in [pyproject], or `0.0.0` when it cannot be read."""
     try:
-        return _package_version("tracedown-probe-agent")
-    except PackageNotFoundError:
+        with pyproject.open("rb") as f:
+            version = tomllib.load(f)["project"]["version"]
+        return version if isinstance(version, str) and version else "0.0.0"
+    except (OSError, KeyError, TypeError, ValueError):
+        # ValueError covers a malformed file (TOMLDecodeError) and one that is
+        # not UTF-8 (UnicodeDecodeError); TypeError a `project` that is not a
+        # table; KeyError a dynamic or absent version.
         return "0.0.0"
 
 
+#: The version this agent reports — on `/health`, in the OpenAPI document and,
+#: by default, in the User-Agent of every probe.
+AGENT_VERSION = _agent_version()
+
 #: Default value for :attr:`AgentSettings.user_agent` — the product name and
 #: its version, nothing more.
-DEFAULT_USER_AGENT = f"tracedown-agent/{_agent_version()}"
+DEFAULT_USER_AGENT = f"tracedown-agent/{AGENT_VERSION}"
 
 
 class AgentSettings(BaseSettings):
