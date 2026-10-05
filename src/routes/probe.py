@@ -19,11 +19,17 @@ from fastapi.responses import JSONResponse
 
 from models.job import JobPayload
 from mtls import envelope
-from services.executor import execute_probe
+from services.executor import AgentAtCapacity, execute_probe
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["probe"])
+
+
+def _at_capacity(refusal: AgentAtCapacity) -> JSONResponse:
+    """503: this agent declined the job before running it. The scheduler may
+    hand the run to another agent, or records the tick as skipped."""
+    return JSONResponse(status_code=503, content={"error": "agent_at_capacity", "detail": str(refusal)})
 
 
 @router.post("/probe")
@@ -32,7 +38,10 @@ async def run_probe(request: Request) -> JSONResponse:
     body = await request.json()
 
     if not envelope.is_envelope(body):
-        return JSONResponse(content=await execute_probe(JobPayload(**body)))
+        try:
+            return JSONResponse(content=await execute_probe(JobPayload(**body)))
+        except AgentAtCapacity as e:
+            return _at_capacity(e)
 
     private_key = getattr(request.app.state, "agent_private_key", None)
     if private_key is None:
@@ -52,7 +61,11 @@ async def run_probe(request: Request) -> JSONResponse:
     # this, and keeping it under the GCM tag means nothing about the exchange
     # travels in the clear.
     reply_cert = opened.pop("replyCert", None)
-    result = await execute_probe(JobPayload(**opened))
+    try:
+        result = await execute_probe(JobPayload(**opened))
+    except AgentAtCapacity as e:
+        # A refusal, not a result: nothing about the run to seal.
+        return _at_capacity(e)
 
     if not reply_cert:
         # Sealed one way only. Honest rather than silently downgrading: a

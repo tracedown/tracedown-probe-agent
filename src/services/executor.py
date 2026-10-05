@@ -363,9 +363,7 @@ def _tls_policy_refusal() -> dict[str, Any]:
     }
 
 
-def _run_budget_timeout(
-    budget_ms: int, started_at: str, elapsed_ms: int, *, started: bool
-) -> dict[str, Any]:
+def _run_budget_timeout(budget_ms: int, started_at: str, elapsed_ms: int) -> dict[str, Any]:
     """A ProbeResult standing in for a run that outlived its budget.
 
     Shaped like any other result (spec §9) so the ingestor persists it on the
@@ -384,28 +382,7 @@ def _run_budget_timeout(
     for both kinds alike. Without the event the outage is never announced:
     the next successful run still emits `recovered` from `prev.outcome`, so
     the only mail about the incident would say it is over.
-
-    Only when the run `started`, though. The budget clock runs from submission
-    to the pool, and a pool full of over-budget runs (see `execute_probe`) can
-    hold a job past its whole budget without a worker ever picking it up. That
-    is the agent out of capacity, nothing observed about the target, so the
-    result says so in its `error` and raises no alert at the service's owner —
-    who could do nothing about it.
     """
-    if started:
-        error = f"probe did not finish within its {budget_ms}ms run budget"
-        actions: dict[str, Any] = {
-            "notifications": [
-                _notification_event(
-                    "timeout",
-                    f"{_SERVICE_PREFIX} timed out: the run did not complete within "
-                    f"{budget_ms}ms",
-                )
-            ]
-        }
-    else:
-        error = f"probe did not start within its {budget_ms}ms run budget (agent at capacity)"
-        actions = {}
     return {
         "outcome": "timeout",
         "startedAt": started_at,
@@ -413,11 +390,41 @@ def _run_budget_timeout(
         "elapsedMs": elapsed_ms,
         "runVars": {},
         "calls": [],
-        "actions": actions,
-        "error": error,
+        "actions": {
+            "notifications": [
+                _notification_event(
+                    "timeout",
+                    f"{_SERVICE_PREFIX} timed out: the run did not complete within "
+                    f"{budget_ms}ms",
+                )
+            ]
+        },
+        "error": f"probe did not finish within its {budget_ms}ms run budget",
         "ingressBytes": 0,
         "egressBytes": 0,
     }
+
+
+class AgentAtCapacity(Exception):
+    """The probe pool never started a run before its budget expired.
+
+    The budget clock runs from submission to the pool, and a pool full of
+    over-budget runs (see `execute_probe`) can hold a job past its whole
+    budget without a worker ever picking it up. That is this agent out of
+    capacity: the script never started, so nothing was learned about the
+    target, and the right answer is not a ProbeResult of any kind but a
+    refusal — HTTP 503 from the route. The scheduler reads a non-500 5xx as
+    the agent having declined the job before running it, which it may hand to
+    another agent that has not been tried; when none is left it records the
+    tick as skipped (`agent_rejected`) with the alert that goes with it,
+    rather than as a status the service never had. A `timeout` here would
+    count as downtime and be announced only by the recovery after it; an
+    `error` would count against uptime for a target nobody contacted.
+    """
+
+    def __init__(self, budget_ms: int) -> None:
+        super().__init__(f"probe did not start within its {budget_ms}ms run budget (agent at capacity)")
+        self.budget_ms = budget_ms
 
 
 async def execute_probe(payload: JobPayload) -> dict[str, Any]:
@@ -435,9 +442,9 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
     caused, and eventually dispatches the same service twice.
 
     So the deadline is a wall clock over the whole execution. When it expires
-    the agent answers immediately with a `timeout` ProbeResult of its own,
-    inside the scheduler's own client timeout, and the run is settled by an
-    observation rather than by a transport failure.
+    on a run that is under way, the agent answers immediately with a `timeout`
+    ProbeResult of its own, inside the scheduler's own client timeout, and the
+    run is settled by an observation rather than by a transport failure.
 
     Residual gap, worth stating plainly: the executor runs synchronously in a
     thread and offers no cancellation, so an over-budget run keeps running
@@ -447,8 +454,8 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
     to retry — and the overshoot is bounded by the script's own timeouts, which
     the gateway already caps at the Lace system ceiling. Enough such runs fill
     the pool, and a job queued behind them can then expire before any worker
-    takes it; that is answered as a timeout too, but one that names the agent
-    as the cause and raises no alert (see `_run_budget_timeout`).
+    takes it; that is not a timeout of the target but this agent at capacity,
+    and is refused rather than answered (see `AgentAtCapacity`).
     """
     loop = asyncio.get_running_loop()
     # Set by the worker the moment it takes the job, so an expired budget can
@@ -473,22 +480,23 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
         return await asyncio.wait_for(future, timeout=budget_ms / 1000.0)
     except TimeoutError:
         elapsed_ms = int((time.monotonic() - started_mono) * 1000)
-        if started.is_set():
+        # A worker that took the job in the last instant before the deadline
+        # has not necessarily set the flag yet; give it a moment before
+        # concluding the run never started. wait_for cancelled the future, and
+        # a job the pool has not taken by then is dropped — it never runs.
+        if started.wait(0.1):
             log.warning(
                 "probe exceeded its %dms run budget after %dms — answering with a timeout result; "
                 "the execution thread runs on until its per-call timeouts expire",
                 budget_ms,
                 elapsed_ms,
             )
-        else:
-            # wait_for cancelled the future, and a job the pool has not taken
-            # yet is dropped by that — it never runs.
-            log.warning(
-                "probe did not start within its %dms run budget — the probe pool is full; "
-                "answering with a timeout result that raises no alert",
-                budget_ms,
-            )
-        return _run_budget_timeout(budget_ms, started_at, elapsed_ms, started=started.is_set())
+            return _run_budget_timeout(budget_ms, started_at, elapsed_ms)
+        log.warning(
+            "probe did not start within its %dms run budget — the probe pool is full; refusing the job",
+            budget_ms,
+        )
+        raise AgentAtCapacity(budget_ms)
 
 
 async def run_health_script(token_url: str) -> str:
