@@ -16,6 +16,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,12 @@ def init_probe_pool(max_workers: int) -> None:
     """Initialize the probe execution pool at startup."""
     global _probe_pool
     _probe_pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="probe")
+
+# Opens every message the agent composes itself. A dispatcher-side template:
+# the names are filled in there, the agent is told none of them. Rendered for
+# the run-level timeout and refusal events below; the recovery text that uses
+# it too is composed by the dispatcher from its own default instead.
+_SERVICE_PREFIX = "${s.name} in ${w.name}.${p.name}"
 
 # Lace script used for health challenge-response.
 _HEALTH_SCRIPT = 'get("$tokenUrl").expect(status: 200).store({ "$$token": this.body.token })'
@@ -138,10 +145,11 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
             executor._config["result"]["bodies"] = {"dir": bodies_dir}
 
         if "laceEmitRecovery" in active_extensions:
-            # The recovery text doubles as the dispatcher-side template, so a
-            # ${var}-rich default gives the message context (service, path).
+            # The dispatcher composes the recovery message itself (it alone
+            # knows the downtime), so this text is only what the raw result
+            # shows; it is still shaped like the other events, for the reader.
             executor._config.setdefault("extensions", {})["laceEmitRecovery"] = {
-                "recovery_message": "${s.name} in ${w.name}.${p.name} recovered",
+                "recovery_message": f"{_SERVICE_PREFIX} recovered",
             }
 
         # Vet every connect the executor makes for this run against the egress
@@ -266,6 +274,39 @@ def _script_disables_tls(script: str) -> bool:
     return egress_guard.script_rejects_tls_verification(ast)
 
 
+def _notification_event(trigger: str, text: str) -> dict[str, Any]:
+    """A `laceNotifications` notification event the agent raises itself.
+
+    The results this file synthesises never pass through the Lace executor, so
+    the extension rules that would normally emit a `timeout` or `error` event
+    into `result.actions.notifications` never run for them. Downstream, a
+    result with no notification events is simply not alerted on — so a stand-in
+    result that reports a failure has to carry its own event, in the same
+    shape the extension would have emitted (`notification_event`,
+    lace-extensions.md §12), or the failure is silent while the recovery that
+    follows it (which the extension does emit, from `prev.outcome`) is not.
+
+    Run-level, like the recovery event: `callIndex` -1 because there is no call
+    record to point at. The text is a dispatcher template (`${s.name}` and the
+    like are filled in there). A `timeout.notification` the script declares for
+    its calls is not consulted: that is a per-call setting, and these events are
+    about the run.
+    """
+    return {
+        "callIndex": -1,
+        "conditionIndex": -1,
+        "trigger": trigger,
+        "scope": None,
+        "notification": {"tag": "text", "value": text},
+    }
+
+
+_TLS_POLICY_REFUSAL_ERROR = (
+    "script rejected: security.rejectInvalidCerts=false is not permitted "
+    "on this deployment (TLS certificate verification is mandatory)"
+)
+
+
 def _tls_policy_refusal() -> dict[str, Any]:
     """A ProbeResult (spec §9) for a script declined by TLS policy.
 
@@ -273,6 +314,17 @@ def _tls_policy_refusal() -> dict[str, Any]:
     path: `outcome=failure` with an explanatory `error` and no calls, because
     nothing was dispatched. A refusal, not an agent fault, so the route answers
     200 with this body rather than a 5xx the scheduler would treat as its own.
+
+    Carries an `error` notification event on every refusal, as the timeout
+    below does on every occurrence, rather than once on the transition in.
+    Once would be the natural number for something that repeats every tick
+    until the script is changed, but the one mail it allows is easily lost:
+    the usual way into a refusal is a TLS-error alert followed by the script
+    author turning verification off, and that first refusal lands inside the
+    dispatcher's per-recipient failure cooldown, which swallows it with no
+    second chance. Announcing every tick costs one mail per cooldown window
+    and a webhook per tick until the script is fixed — the same as a target
+    that times out — and needs no state carried between runs.
     """
     now = _now_iso()
     return {
@@ -282,18 +334,24 @@ def _tls_policy_refusal() -> dict[str, Any]:
         "elapsedMs": 0,
         "runVars": {},
         "calls": [],
-        "actions": {},
-        "error": (
-            "script rejected: security.rejectInvalidCerts=false is not permitted "
-            "on this deployment (TLS certificate verification is mandatory)"
-        ),
+        "actions": {
+            "notifications": [
+                _notification_event(
+                    "error",
+                    f"{_SERVICE_PREFIX} is not being run: TLS certificate verification "
+                    "is required here; remove `security: { rejectInvalidCerts: false }` "
+                    "from the script",
+                )
+            ]
+        },
+        "error": _TLS_POLICY_REFUSAL_ERROR,
         "ingressBytes": 0,
         "egressBytes": 0,
     }
 
 
 def _run_budget_timeout(
-    budget_ms: int, started_at: str, elapsed_ms: int
+    budget_ms: int, started_at: str, elapsed_ms: int, *, started: bool
 ) -> dict[str, Any]:
     """A ProbeResult standing in for a run that outlived its budget.
 
@@ -306,7 +364,35 @@ def _run_budget_timeout(
     agent error status as a fault of the agent, and this is not one — the
     target did not answer inside the budget the scheduler itself set, which is
     an observation about the target and must not be re-dispatched elsewhere.
+
+    Carries a `timeout` notification event on every occurrence, as the
+    extension's own timeout rule does for a per-call timeout: mail is spaced
+    by the dispatcher's per-recipient cooldown, webhooks fire on every tick,
+    for both kinds alike. Without the event the outage is never announced:
+    the next successful run still emits `recovered` from `prev.outcome`, so
+    the only mail about the incident would say it is over.
+
+    Only when the run `started`, though. The budget clock runs from submission
+    to the pool, and a pool full of over-budget runs (see `execute_probe`) can
+    hold a job past its whole budget without a worker ever picking it up. That
+    is the agent out of capacity, nothing observed about the target, so the
+    result says so in its `error` and raises no alert at the service's owner —
+    who could do nothing about it.
     """
+    if started:
+        error = f"probe did not finish within its {budget_ms}ms run budget"
+        actions: dict[str, Any] = {
+            "notifications": [
+                _notification_event(
+                    "timeout",
+                    f"{_SERVICE_PREFIX} timed out: the run did not complete within "
+                    f"{budget_ms}ms",
+                )
+            ]
+        }
+    else:
+        error = f"probe did not start within its {budget_ms}ms run budget (agent at capacity)"
+        actions = {}
     return {
         "outcome": "timeout",
         "startedAt": started_at,
@@ -314,8 +400,8 @@ def _run_budget_timeout(
         "elapsedMs": elapsed_ms,
         "runVars": {},
         "calls": [],
-        "actions": {},
-        "error": f"probe did not finish within its {budget_ms}ms run budget",
+        "actions": actions,
+        "error": error,
         "ingressBytes": 0,
         "egressBytes": 0,
     }
@@ -346,10 +432,21 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
     holds a pool slot (of `PROBE_AGENT_MAX_CONCURRENCY`) for that long and its
     result is discarded. Nothing is double-probed — the scheduler is not asked
     to retry — and the overshoot is bounded by the script's own timeouts, which
-    the gateway already caps at the Lace system ceiling.
+    the gateway already caps at the Lace system ceiling. Enough such runs fill
+    the pool, and a job queued behind them can then expire before any worker
+    takes it; that is answered as a timeout too, but one that names the agent
+    as the cause and raises no alert (see `_run_budget_timeout`).
     """
     loop = asyncio.get_running_loop()
-    future = loop.run_in_executor(_probe_pool, _run_sync, payload)
+    # Set by the worker the moment it takes the job, so an expired budget can
+    # tell a run that outlived it from one the pool never started.
+    started = threading.Event()
+
+    def run() -> dict[str, Any]:
+        started.set()
+        return _run_sync(payload)
+
+    future = loop.run_in_executor(_probe_pool, run)
 
     budget_ms = payload.request_timeout_ms
     if budget_ms is None:
@@ -363,13 +460,22 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
         return await asyncio.wait_for(future, timeout=budget_ms / 1000.0)
     except TimeoutError:
         elapsed_ms = int((time.monotonic() - started_mono) * 1000)
-        log.warning(
-            "probe exceeded its %dms run budget after %dms — answering with a timeout result; "
-            "the execution thread runs on until its per-call timeouts expire",
-            budget_ms,
-            elapsed_ms,
-        )
-        return _run_budget_timeout(budget_ms, started_at, elapsed_ms)
+        if started.is_set():
+            log.warning(
+                "probe exceeded its %dms run budget after %dms — answering with a timeout result; "
+                "the execution thread runs on until its per-call timeouts expire",
+                budget_ms,
+                elapsed_ms,
+            )
+        else:
+            # wait_for cancelled the future, and a job the pool has not taken
+            # yet is dropped by that — it never runs.
+            log.warning(
+                "probe did not start within its %dms run budget — the probe pool is full; "
+                "answering with a timeout result that raises no alert",
+                budget_ms,
+            )
+        return _run_budget_timeout(budget_ms, started_at, elapsed_ms, started=started.is_set())
 
 
 async def run_health_script(token_url: str) -> str:

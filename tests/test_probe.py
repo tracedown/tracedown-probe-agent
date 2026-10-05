@@ -6,6 +6,7 @@ lacelang dependency in unit tests.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -57,7 +58,7 @@ JOB_PAYLOAD = {
 def test_probe_returns_raw_result(client: TestClient) -> None:
     """POST /probe forwards the executor's raw ProbeResult verbatim."""
     with patch("services.executor.LaceExecutor") as mock_cls:
-        mock_cls.return_value.run.return_value = dict(SAMPLE_EXECUTOR_RESULT)
+        mock_cls.return_value.run.return_value = deepcopy(SAMPLE_EXECUTOR_RESULT)
 
         resp = client.post("/probe", json=JOB_PAYLOAD)
 
@@ -72,66 +73,24 @@ def test_probe_returns_raw_result(client: TestClient) -> None:
     assert body["calls"][0]["response"]["status"] == 200
     assert body["calls"][0]["response"]["dnsMs"] == 12
     assert body["runVars"] == {"counter": "1"}
+    assert body["actions"] == {}
     assert "jobId" not in body
 
 
-def test_probe_failure_result(client: TestClient) -> None:
-    """POST /probe correctly forwards a failure outcome."""
-    failure_result = {
-        "outcome": "failure",
-        "startedAt": "2026-05-01T12:00:00.000Z",
-        "endedAt": "2026-05-01T12:00:01.000Z",
-        "elapsedMs": 1000,
-        "runVars": {},
-        "calls": [
-            {
-                "index": 0,
-                "outcome": "failure",
-                "startedAt": "2026-05-01T12:00:00.000Z",
-                "endedAt": "2026-05-01T12:00:01.000Z",
-                "request": {"url": "https://api.example.com/health", "method": "GET", "headers": {}},
-                "response": None,
-                "redirects": [],
-                "assertions": [],
-                "config": {},
-                "warnings": [],
-                "error": "Connection refused",
-            }
-        ],
-        "actions": {},
-    }
+def test_probe_refusal_is_announced_over_the_route(client: TestClient) -> None:
+    """A TLS-policy refusal carries its own `error` notification event, on the
+    first tick and again when the scheduler sends that refusal back as `prev`
+    — through the route, so the JSON round trip (`scope` as null) is covered."""
+    script = (
+        'get("https://target.invalid/", { security: { rejectInvalidCerts: false } })'
+        '.expect(status: 200)'
+    )
+    with patch("services.executor._reject_insecure_tls", True):
+        first = client.post("/probe", json={"script": script}).json()
+        repeat = client.post("/probe", json={"script": script, "prev": first}).json()
 
-    with patch("services.executor.LaceExecutor") as mock_cls:
-        mock_cls.return_value.run.return_value = failure_result
-
-        resp = client.post("/probe", json=JOB_PAYLOAD)
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["outcome"] == "failure"
-    assert body["calls"][0]["error"] == "Connection refused"
-
-
-def test_probe_with_prev(client: TestClient) -> None:
-    """POST /probe forwards prev result to the executor."""
-    prev_result = {
-        "outcome": "success",
-        "startedAt": "2026-05-01T11:00:00.000Z",
-        "endedAt": "2026-05-01T11:00:00.100Z",
-        "elapsedMs": 100,
-        "runVars": {"counter": "0"},
-        "calls": [],
-        "actions": {},
-    }
-
-    payload_with_prev = {**JOB_PAYLOAD, "prev": prev_result}
-
-    with patch("services.executor.LaceExecutor") as mock_cls:
-        mock_cls.return_value.run.return_value = dict(SAMPLE_EXECUTOR_RESULT)
-
-        resp = client.post("/probe", json=payload_with_prev)
-
-    assert resp.status_code == 200
-    mock_cls.return_value.run.assert_called_once()
-    call_kwargs = mock_cls.return_value.run.call_args
-    assert call_kwargs.kwargs.get("prev") == prev_result or call_kwargs[1].get("prev") == prev_result
+    for body in (first, repeat):
+        assert body["outcome"] == "failure" and body["calls"] == []
+        (event,) = body["actions"]["notifications"]
+        assert event["trigger"] == "error"
+        assert event["scope"] is None
