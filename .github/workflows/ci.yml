@@ -158,4 +158,11 @@ jobs:
             echo "waiting for agent... ($i/20)"; sleep 1
           done
           curl -sf http://localhost:8443/health
+          # The version the image reports must be the one this checkout
+          # declares — the same extraction release.yml tags from. An image
+          # built without its pyproject.toml would report 0.0.0 and otherwise
+          # look healthy.
+          declared="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
+          reported="$(curl -sf http://localhost:8443/health | python3 -c 'import sys, json; print(json.load(sys.stdin)["version"])')"
+          test "$reported" = "$declared" || { echo "::error::image reports version $reported, pyproject declares $declared"; exit 1; }
           docker rm -f smoke

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from lacelang_executor import __version__ as executor_version
 from pydantic import BaseModel
 
+from config import AGENT_VERSION
 from services.executor import run_health_script
 
 log = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ async def health(request: Request) -> HealthResponse:
     """Basic liveness check."""
     return HealthResponse(
         status="ok",
-        version="0.1.0",
+        version=AGENT_VERSION,
         executor_version=executor_version,
         payload_encryption=_can_open_sealed(request),
     )

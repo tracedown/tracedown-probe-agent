@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from config import AgentSettings
+from config import AGENT_VERSION, AgentSettings
 from mtls import envelope
 from mtls.bootstrap import ensure_registered
 from mtls.renewal import renewal_loop
@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
     settings = AgentSettings()
     app = FastAPI(
         title="Tracedown Probe Agent",
-        version="0.1.0",
+        version=AGENT_VERSION,
         lifespan=lifespan,
     )
     app.state.settings = settings

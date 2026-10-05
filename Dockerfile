@@ -25,6 +25,8 @@ COPY --from=deps /tmp/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
+# pyproject.toml is read at runtime for the version the agent reports.
+COPY pyproject.toml ./
 COPY src/ ./src/
 
 RUN mkdir -p /certs
