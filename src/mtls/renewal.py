@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from config import AgentSettings
 from mtls.bootstrap import build_csr_pem, generate_keypair, private_key_pem
+from mtls.bootstrap_trust import gateway_trust_context
 from mtls.ca_pins import bundle_preserves_pins, ca_fingerprints, read_pins, write_pins
 from mtls.ssl_context import build_client_context
 
@@ -72,7 +73,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def _renewal_verify(settings: AgentSettings):
-    """The httpx ``verify`` argument for a renewal call.
+    """The httpx ``verify`` argument for a renewal call to the gateway itself.
 
     An https endpoint is contacted over mutual TLS using the agent's already-held
     certificate + trusted CA (never verify=False once bootstrapped). A plain http
@@ -81,6 +82,73 @@ def _renewal_verify(settings: AgentSettings):
     if settings.scheduler_url.lower().startswith("https"):
         return build_client_context(settings)
     return False
+
+
+def _is_certificate_rejection(exc: BaseException) -> bool:
+    """True when ``exc`` is a TLS handshake that failed on the PEER'S certificate.
+
+    httpx surfaces it as a ``ConnectError`` whose cause chain ends in
+    ``ssl.SSLCertVerificationError``. Nothing else qualifies — a refused
+    connection, a timeout or an HTTP error says nothing about which trust
+    anchor is the right one, so none of them may move renewal on to another.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, ssl.SSLCertVerificationError):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+async def _post_renewal(settings: AgentSettings, payload: dict) -> dict:
+    """POST the renewal request, authenticating whatever answers for the gateway.
+
+    Over https there are two honest answers to "who is on the other end", and
+    the agent cannot know in advance which one its deployment is:
+
+    1. **The gateway itself**, presenting a certificate from the platform's own
+       CA. Authenticated against the CA the agent pinned at enrolment, with the
+       agent's certificate presented — mutual TLS, as it always was.
+    2. **Something that terminates TLS in front of the gateway** — a reverse
+       proxy or an edge network with an ordinary certificate. The pinned CA
+       never issued that certificate and never will, so it is authenticated the
+       way the operator said the gateway's front is authenticated at enrolment:
+       the configured pin, the configured CA bundle, or the system trust store,
+       with the hostname checked.
+
+    The first is tried first and nothing changes for a deployment where it
+    works. Only a rejection of the peer's CERTIFICATE moves on to the second;
+    every other failure is the failure. Neither path skips verification, and
+    the response is still held to the CA-continuity pin by the caller, so
+    whichever front answered cannot swap the trust anchor.
+
+    Before this, the second case could not renew at all: every agent enrolled
+    through a public https URL kept its first certificate until it expired.
+    """
+    url = f"{settings.scheduler_url}/internal/agents/renew"
+
+    async def post(verify) -> dict:
+        async with httpx.AsyncClient(verify=verify) as client:
+            resp = await client.post(url, json=payload, timeout=30.0)
+            resp.raise_for_status()
+            return resp.json()
+
+    verify = _renewal_verify(settings)
+    if verify is False:
+        return await post(False)
+    try:
+        return await post(verify)
+    except httpx.ConnectError as exc:
+        if not _is_certificate_rejection(exc):
+            raise
+        log.info(
+            "the gateway's certificate was not issued by the platform CA — "
+            "authenticating it as a TLS front instead (%s)",
+            exc,
+        )
+    return await post(await gateway_trust_context(settings))
 
 
 async def _renew(
@@ -111,20 +179,14 @@ async def _renew(
     signature_b64 = base64.b64encode(signature).decode("ascii")
 
     log.info("renewing certificate for slug %s via %s", slug, settings.scheduler_url)
-    # Once bootstrapped the agent already holds its certificate + trusted CA, so
-    # a renewal over https runs as mutual TLS (present our cert, verify the CA) —
-    # never verify=False. When the endpoint is plain http (internal network),
-    # there is no transport to verify; the CA-continuity pin below still guards
-    # the trust anchor regardless of transport.
-    verify = _renewal_verify(settings)
-    async with httpx.AsyncClient(verify=verify) as client:
-        resp = await client.post(
-            f"{settings.scheduler_url}/internal/agents/renew",
-            json={"slug": slug, "csrPem": csr_pem, "signature": signature_b64},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    # Over https the peer is always authenticated — as the gateway itself or as
+    # the TLS front the operator configured (see _post_renewal) — never
+    # verify=False. When the endpoint is plain http (internal network), there
+    # is no transport to verify; the CA-continuity pin below still guards the
+    # trust anchor regardless of transport.
+    data = await _post_renewal(
+        settings, {"slug": slug, "csrPem": csr_pem, "signature": signature_b64}
+    )
 
     # Trust-anchor continuity: a renewal must never be allowed to swap the CA
     # for one the agent has not already pinned. Reject the whole renewal if the

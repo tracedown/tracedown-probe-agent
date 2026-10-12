@@ -247,6 +247,19 @@ async def resolve_bootstrap_verify(settings: AgentSettings) -> ssl.SSLContext | 
         )
         return False
 
+    return await gateway_trust_context(settings)
+
+
+async def gateway_trust_context(settings: AgentSettings) -> ssl.SSLContext:
+    """The context that authenticates an ``https://`` gateway as configured.
+
+    The pin, else the CA bundle, else the system trust store — the operator's
+    statement of what stands in front of the gateway. Enrolment uses it for its
+    one request, and renewal uses it for a gateway that is reached through that
+    same front (see ``renewal._post_renewal``). It never returns
+    "do not verify": the opt-out belongs to :func:`resolve_bootstrap_verify`
+    and to enrolment alone.
+    """
     if settings.bootstrap_pin_sha256:
         if settings.bootstrap_ca_bundle:
             log.info(

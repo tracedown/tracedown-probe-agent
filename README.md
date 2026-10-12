@@ -174,6 +174,21 @@ Enrolment and renewal are served at `/internal/agents/…` on the gateway root, 
 whatever terminates TLS has to proxy that path through — check your vhost before
 switching an agent from the internal `http://` URL to the public one.
 
+**Renewal authenticates the gateway too, and never skips it.** A gateway that
+presents a certificate from the platform's own CA is verified against the CA the
+agent pinned at enrolment, over mutual TLS. A gateway behind something that
+terminates TLS — a reverse proxy, an edge network — presents a certificate that
+CA never issued, so it is verified the way you said its front is verified at
+enrolment: `PROBE_AGENT_BOOTSTRAP_PIN_SHA256`, else
+`PROBE_AGENT_BOOTSTRAP_CA_BUNDLE`, else the system trust store, with the
+hostname checked. Keep those settings in place after enrolment if the front's
+certificate is not publicly trusted — renewal needs them a year later. A pinned
+fingerprint goes stale when the front's certificate is reissued; prefer the CA
+bundle for anything long-lived. `PROBE_AGENT_INSECURE_SKIP_BOOTSTRAP_TLS_VERIFY`
+does not apply to renewal. Agents before 0.3.9 verified renewal against the
+pinned CA only, so one enrolled through a TLS front could not renew at all:
+upgrade before its first certificate runs out.
+
 `DEPLOYMENT_ENV` is read unprefixed as well as as `PROBE_AGENT_DEPLOYMENT_ENV`,
 so a stack that already sets it platform-wide needs nothing extra. Only the exact
 value `production` arms these guards; unset means development.
