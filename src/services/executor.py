@@ -29,7 +29,7 @@ from lacelang_executor import LaceExecutor
 from lacelang_validator.parser import parse as _parse_lace
 
 from models.job import JobPayload
-from services import egress_guard, wire_metrics
+from services import egress_guard, run_progress, wire_metrics
 from storage.base import BodyStorage
 
 log = logging.getLogger(__name__)
@@ -110,7 +110,13 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
 
     Creates a per-request executor to avoid shared config mutation
     when multiple probes run concurrently in the thread pool.
+
+    Keeps the record `execute_probe` assigned to this thread up to date with
+    how far the run has got, so it can say where the run was if the budget
+    expires. Only the executor's own HTTP is recorded; the body upload below
+    is a phase of its own.
     """
+    progress = run_progress.assigned() or run_progress.RunProgress()
     bodies_dir = tempfile.mkdtemp(prefix="lace-bodies-")
 
     try:
@@ -169,7 +175,7 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
         # policy. Scoped to the run only — body upload (S3) and other agent I/O
         # below stay outside the guard, so internal traffic is never caught.
         guard_ctx = egress_guard.active() if _egress_enabled else nullcontext()
-        with wire_metrics.measure() as wire, guard_ctx:
+        with wire_metrics.measure() as wire, guard_ctx, run_progress.track(progress):
             result = executor.run(
                 script=payload.script,
                 vars=payload.variables if payload.variables else None,
@@ -184,6 +190,7 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
 
         # Upload any saved bodies and rewrite paths in the result.
         if _storage is not None:
+            progress.enter(run_progress.STORING_BODIES)
             _upload_bodies(result, payload.secret_values or [])
 
         return result
@@ -363,7 +370,12 @@ def _tls_policy_refusal() -> dict[str, Any]:
     }
 
 
-def _run_budget_timeout(budget_ms: int, started_at: str, elapsed_ms: int) -> dict[str, Any]:
+def _run_budget_timeout(
+    budget_ms: int,
+    started_at: str,
+    elapsed_ms: int,
+    progress: run_progress.RunProgress | None = None,
+) -> dict[str, Any]:
     """A ProbeResult standing in for a run that outlived its budget.
 
     Shaped like any other result (spec §9) so the ingestor persists it on the
@@ -382,27 +394,38 @@ def _run_budget_timeout(budget_ms: int, started_at: str, elapsed_ms: int) -> dic
     for both kinds alike. Without the event the outage is never announced:
     the next successful run still emits `recovered` from `prev.outcome`, so
     the only mail about the incident would say it is over.
+
+    Says where the run was when the budget expired, from ``progress``: which
+    request, in which phase, with what timings and how many bytes. In the
+    `error`, in the announcement, and as a `stall` object beside the byte
+    counters (agent metadata, like them, not part of the Lace ProbeResult).
+    It is a record of where the run stood and no verdict on why: a response
+    that never starts reads the same whether the target hung or the route to
+    it did. The byte counters are what crossed the wire up to that moment.
     """
-    return {
+    stall = progress.snapshot() if progress is not None else None
+    error = f"probe did not finish within its {budget_ms}ms run budget"
+    text = f"{_SERVICE_PREFIX} timed out: the run did not complete within {budget_ms}ms"
+    if stall is not None:
+        where = run_progress.describe(stall)
+        error = f"{error}: {where}"
+        # The text is a dispatcher template; a URL is free to contain `${`.
+        text = f"{text} ({where.replace('${', chr(92) + '${')})"
+    result: dict[str, Any] = {
         "outcome": "timeout",
         "startedAt": started_at,
         "endedAt": _now_iso(),
         "elapsedMs": elapsed_ms,
         "runVars": {},
         "calls": [],
-        "actions": {
-            "notifications": [
-                _notification_event(
-                    "timeout",
-                    f"{_SERVICE_PREFIX} timed out: the run did not complete within "
-                    f"{budget_ms}ms",
-                )
-            ]
-        },
-        "error": f"probe did not finish within its {budget_ms}ms run budget",
-        "ingressBytes": 0,
-        "egressBytes": 0,
+        "actions": {"notifications": [_notification_event("timeout", text)]},
+        "error": error,
+        "ingressBytes": progress.ingress if progress is not None else 0,
+        "egressBytes": progress.egress if progress is not None else 0,
     }
+    if stall is not None:
+        result["stall"] = stall
+    return result
 
 
 class AgentAtCapacity(Exception):
@@ -461,10 +484,13 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
     # Set by the worker the moment it takes the job, so an expired budget can
     # tell a run that outlived it from one the pool never started.
     started = threading.Event()
+    # Written by the run's thread, read here if the budget expires first.
+    progress = run_progress.RunProgress()
 
     def run() -> dict[str, Any]:
         started.set()
-        return _run_sync(payload)
+        with run_progress.assign(progress):
+            return _run_sync(payload)
 
     future = loop.run_in_executor(_probe_pool, run)
 
@@ -491,7 +517,7 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
                 budget_ms,
                 elapsed_ms,
             )
-            return _run_budget_timeout(budget_ms, started_at, elapsed_ms)
+            return _run_budget_timeout(budget_ms, started_at, elapsed_ms, progress)
         log.warning(
             "probe did not start within its %dms run budget — the probe pool is full; refusing the job",
             budget_ms,

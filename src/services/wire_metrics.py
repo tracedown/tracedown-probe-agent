@@ -23,6 +23,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from services import run_progress
+
 _local = threading.local()
 
 
@@ -52,6 +54,7 @@ class _CountingReader:
     def read(self, *args: Any) -> bytes:
         data = self._fp.read(*args)
         if data:
+            run_progress.on_received(len(data))
             c = _counter()
             if c.active:
                 c.ingress += len(data)
@@ -60,6 +63,7 @@ class _CountingReader:
     def readline(self, *args: Any) -> bytes:
         data = self._fp.readline(*args)
         if data:
+            run_progress.on_received(len(data))
             c = _counter()
             if c.active:
                 c.ingress += len(data)
@@ -68,6 +72,7 @@ class _CountingReader:
     def readinto(self, buf: Any) -> int:
         n = self._fp.readinto(buf)
         if n:
+            run_progress.on_received(n)
             c = _counter()
             if c.active:
                 c.ingress += n
@@ -93,6 +98,7 @@ def install() -> None:
         c = _counter()
         if c.active and isinstance(data, (bytes, bytearray)):
             c.egress += len(data)
+            run_progress.on_sent(len(data))
         return orig_send(self, data)
 
     def patched_resp_init(self: http.client.HTTPResponse, *args: Any, **kwargs: Any) -> None:
