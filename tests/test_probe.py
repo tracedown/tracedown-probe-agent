@@ -75,22 +75,3 @@ def test_probe_returns_raw_result(client: TestClient) -> None:
     assert body["runVars"] == {"counter": "1"}
     assert body["actions"] == {}
     assert "jobId" not in body
-
-
-def test_probe_refusal_is_announced_over_the_route(client: TestClient) -> None:
-    """A TLS-policy refusal carries its own `error` notification event, on the
-    first tick and again when the scheduler sends that refusal back as `prev`
-    — through the route, so the JSON round trip (`scope` as null) is covered."""
-    script = (
-        'get("https://target.invalid/", { security: { rejectInvalidCerts: false } })'
-        '.expect(status: 200)'
-    )
-    with patch("services.executor._reject_insecure_tls", True):
-        first = client.post("/probe", json={"script": script}).json()
-        repeat = client.post("/probe", json={"script": script, "prev": first}).json()
-
-    for body in (first, repeat):
-        assert body["outcome"] == "failure" and body["calls"] == []
-        (event,) = body["actions"]["notifications"]
-        assert event["trigger"] == "error"
-        assert event["scope"] is None

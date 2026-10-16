@@ -167,13 +167,6 @@ class AgentSettings(BaseSettings):
     # PROBE_AGENT_EGRESS_GUARD explicitly to force it on or off.
     egress_guard: bool | None = None
 
-    # In the hosted deployment the agent refuses to run a tenant script that
-    # sets `security.rejectInvalidCerts: false` — a tenant must not be able to
-    # turn certificate checking off on our fleet. The Lace feature is untouched
-    # (it stays valid for self-hosters); the agent just declines the script.
-    # Same auto/None semantics as above.
-    force_tls_verify: bool | None = None
-
     # Body storage: "filesystem" or "s3"
     storage_backend: str = "filesystem"
     storage_dir: str = "/data/bodies"
@@ -217,12 +210,4 @@ class AgentSettings(BaseSettings):
         otherwise on in production, off everywhere else."""
         if self.egress_guard is not None:
             return self.egress_guard
-        return self.is_production
-
-    @property
-    def force_tls_verify_enabled(self) -> bool:
-        """Whether to refuse scripts that disable TLS certificate verification.
-        Explicit setting wins; otherwise on in production, off elsewhere."""
-        if self.force_tls_verify is not None:
-            return self.force_tls_verify
         return self.is_production

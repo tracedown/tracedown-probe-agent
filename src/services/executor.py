@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 from lacelang_executor import LaceExecutor
-from lacelang_validator.parser import parse as _parse_lace
 
 from models.job import JobPayload
 from services import egress_guard, wire_metrics
@@ -70,13 +69,11 @@ _user_agent: str = ""
 
 # Target-egress policy for tenant probes, set by init_egress_policy(). When
 # _egress_enabled, the executor's run is wrapped in the socket-layer guard so
-# every connect (initial + each redirect hop) is vetted; when
-# _reject_insecure_tls, a script that turns TLS verification off is refused
-# before it runs. Both default off so nothing changes unless the deployment
-# opts in (production does, via config). Only tenant probes are guarded — the
-# health challenge (below) dials the internal gateway and stays unguarded.
+# every connect (initial + each redirect hop) is vetted. Defaults off so nothing
+# changes unless the deployment opts in (production does, via config). Only
+# tenant probes are guarded — the health challenge (below) dials the internal
+# gateway and stays unguarded.
 _egress_enabled: bool = False
-_reject_insecure_tls: bool = False
 
 
 def init_storage(storage: BodyStorage) -> None:
@@ -91,16 +88,14 @@ def init_user_agent(user_agent: str) -> None:
     _user_agent = user_agent
 
 
-def init_egress_policy(egress_enabled: bool, reject_insecure_tls: bool) -> None:
+def init_egress_policy(egress_enabled: bool) -> None:
     """Configure the tenant-probe egress policy. Called once at startup.
 
     When ``egress_enabled`` the socket-layer guard is installed (idempotent) and
-    activated around each probe run. ``reject_insecure_tls`` makes the agent
-    decline any script that disables TLS certificate verification.
+    activated around each probe run.
     """
-    global _egress_enabled, _reject_insecure_tls
+    global _egress_enabled
     _egress_enabled = egress_enabled
-    _reject_insecure_tls = reject_insecure_tls
     if egress_enabled:
         egress_guard.install()
 
@@ -114,12 +109,6 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
     bodies_dir = tempfile.mkdtemp(prefix="lace-bodies-")
 
     try:
-        # SEC-H6: in the hosted deployment a tenant must not be able to turn TLS
-        # certificate verification off. Inspect the parsed script and decline it
-        # before any wire activity, rather than reaching into the Lace runtime.
-        if _reject_insecure_tls and _script_disables_tls(payload.script):
-            return _tls_policy_refusal()
-
         # Determine which extensions to load based on variables
         active_extensions = ["laceNotifications"]
         variables = payload.variables or {}
@@ -273,20 +262,6 @@ def _now_iso() -> str:
     return stamp.replace("+00:00", "Z")
 
 
-def _script_disables_tls(script: str) -> bool:
-    """True if the script sets `security.rejectInvalidCerts: false` on any call.
-
-    Parse failures are treated as "does not disable TLS": the script is invalid
-    and the executor will reject it on the normal path with a real diagnostic —
-    a parse error here must not be reported as a TLS-policy refusal.
-    """
-    try:
-        ast = _parse_lace(script)
-    except Exception:  # noqa: BLE001 — any parse failure defers to the executor
-        return False
-    return egress_guard.script_rejects_tls_verification(ast)
-
-
 def _notification_event(trigger: str, text: str) -> dict[str, Any]:
     """A `laceNotifications` notification event the agent raises itself.
 
@@ -311,55 +286,6 @@ def _notification_event(trigger: str, text: str) -> dict[str, Any]:
         "trigger": trigger,
         "scope": None,
         "notification": {"tag": "text", "value": text},
-    }
-
-
-_TLS_POLICY_REFUSAL_ERROR = (
-    "script rejected: security.rejectInvalidCerts=false is not permitted "
-    "on this deployment (TLS certificate verification is mandatory)"
-)
-
-
-def _tls_policy_refusal() -> dict[str, Any]:
-    """A ProbeResult (spec §9) for a script declined by TLS policy.
-
-    Shaped like any other result so the ingestor persists it on the normal
-    path: `outcome=failure` with an explanatory `error` and no calls, because
-    nothing was dispatched. A refusal, not an agent fault, so the route answers
-    200 with this body rather than a 5xx the scheduler would treat as its own.
-
-    Carries an `error` notification event on every refusal, as the timeout
-    below does on every occurrence, rather than once on the transition in.
-    Once would be the natural number for something that repeats every tick
-    until the script is changed, but the one mail it allows is easily lost:
-    the usual way into a refusal is a TLS-error alert followed by the script
-    author turning verification off, and that first refusal lands inside the
-    dispatcher's per-recipient failure cooldown, which swallows it with no
-    second chance. Announcing every tick costs one mail per cooldown window
-    and a webhook per tick until the script is fixed — the same as a target
-    that times out — and needs no state carried between runs.
-    """
-    now = _now_iso()
-    return {
-        "outcome": "failure",
-        "startedAt": now,
-        "endedAt": now,
-        "elapsedMs": 0,
-        "runVars": {},
-        "calls": [],
-        "actions": {
-            "notifications": [
-                _notification_event(
-                    "error",
-                    f"{_SERVICE_PREFIX} is not being run: TLS certificate verification "
-                    "is required here; remove `security: { rejectInvalidCerts: false }` "
-                    "from the script",
-                )
-            ]
-        },
-        "error": _TLS_POLICY_REFUSAL_ERROR,
-        "ingressBytes": 0,
-        "egressBytes": 0,
     }
 
 
