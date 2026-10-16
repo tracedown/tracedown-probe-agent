@@ -1,5 +1,5 @@
-"""Target-egress policy: the blocklist, socket-layer enforcement, the TLS
-refusal, config gating, and their wiring into the tenant-probe path.
+"""Target-egress policy: the blocklist, socket-layer enforcement, config
+gating, and their wiring into the tenant-probe path.
 
 The guard is implemented entirely in the agent — the Lace executor is an
 unmodified black box. Enforcement is at the socket layer (``getaddrinfo`` /
@@ -17,7 +17,6 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from lacelang_validator.parser import parse
 
 from config import AgentSettings
 from models.job import JobPayload
@@ -71,49 +70,23 @@ def test_public_hostnames_allowed(host: str) -> None:
     assert egress_guard._host_is_blocked(host) is False
 
 
-# ── Static TLS-verification check ───────────────────────────────────
-
-def test_script_rejects_tls_off() -> None:
-    ast = parse('get("https://a/", { security: { rejectInvalidCerts: false } }).expect(status: 200)')
-    assert egress_guard.script_rejects_tls_verification(ast) is True
-
-
-def test_script_rejects_tls_off_on_a_later_call() -> None:
-    ast = parse(
-        'get("https://a/").expect(status: 200)\n'
-        'get("https://b/", { security: { rejectInvalidCerts: false } }).check(status: 200)'
-    )
-    assert egress_guard.script_rejects_tls_verification(ast) is True
-
-
-def test_script_allows_tls_on_or_default() -> None:
-    ast = parse('get("https://a/", { security: { rejectInvalidCerts: true } }).expect(status: 200)')
-    assert egress_guard.script_rejects_tls_verification(ast) is False
-    ast2 = parse('get("https://a/").expect(status: 200)')
-    assert egress_guard.script_rejects_tls_verification(ast2) is False
-
-
 # ── Config gating ───────────────────────────────────────────────────
 
 def test_guards_default_off_in_dev() -> None:
     s = AgentSettings(deployment_env="dev")
     assert s.egress_guard_enabled is False
-    assert s.force_tls_verify_enabled is False
 
 
 def test_guards_default_on_in_production() -> None:
     s = AgentSettings(deployment_env="production")
     assert s.egress_guard_enabled is True
-    assert s.force_tls_verify_enabled is True
 
 
 def test_explicit_setting_overrides_environment() -> None:
-    s = AgentSettings(deployment_env="production", egress_guard=False, force_tls_verify=False)
+    s = AgentSettings(deployment_env="production", egress_guard=False)
     assert s.egress_guard_enabled is False
-    assert s.force_tls_verify_enabled is False
-    s2 = AgentSettings(deployment_env="dev", egress_guard=True, force_tls_verify=True)
+    s2 = AgentSettings(deployment_env="dev", egress_guard=True)
     assert s2.egress_guard_enabled is True
-    assert s2.force_tls_verify_enabled is True
 
 
 # ── Loopback server + fixtures ──────────────────────────────────────
@@ -145,10 +118,8 @@ def _reset_policy():
     """Restore module egress policy after a test mutates it. The socket patches
     stay installed (inert unless active), which is fine."""
     before_enabled = executor_service._egress_enabled
-    before_reject = executor_service._reject_insecure_tls
     yield
     executor_service._egress_enabled = before_enabled
-    executor_service._reject_insecure_tls = before_reject
 
 
 # ── Socket-layer enforcement ────────────────────────────────────────
@@ -191,7 +162,7 @@ def test_active_flag_is_restored_after_block(loopback_server):
 def test_run_sync_refuses_probe_to_blocked_target(loopback_server, _reset_policy):
     """Egress on: a probe whose target resolves to a blocked (loopback) address
     fails through the executor — the guard is wired around the run."""
-    executor_service.init_egress_policy(True, False)
+    executor_service.init_egress_policy(True)
     payload = JobPayload(script=f'get("{loopback_server}").expect(status: 200)')
     result = executor_service._run_sync(payload)
     assert result["outcome"] == "failure"
@@ -201,100 +172,21 @@ def test_run_sync_refuses_probe_to_blocked_target(loopback_server, _reset_policy
 def test_run_sync_allows_probe_when_egress_off(loopback_server, _reset_policy):
     """Egress off (dev/e2e default): the same loopback probe succeeds — the
     guard is a no-op unless the deployment opts in."""
-    executor_service.init_egress_policy(False, False)
+    executor_service.init_egress_policy(False)
     payload = JobPayload(script=f'get("{loopback_server}").expect(status: 200)')
     result = executor_service._run_sync(payload)
     assert result["outcome"] == "success"
     assert result["calls"][0]["response"]["status"] == 200
 
 
-# A host that can never resolve (RFC 2606), so a refusal that failed to
-# refuse would fail loudly here instead of dialling the internet.
-TLS_OFF_SCRIPT = (
-    'get("https://target.invalid/", { security: { rejectInvalidCerts: false } })'
-    '.expect(status: 200)'
-)
-
-REFUSAL_EVENT = {
-    "callIndex": -1,
-    "conditionIndex": -1,
-    "trigger": "error",
-    "scope": None,
-    "notification": {
-        "tag": "text",
-        "value": (
-            "${s.name} in ${w.name}.${p.name} is not being run: TLS certificate "
-            "verification is required here; remove `security: { rejectInvalidCerts: "
-            "false }` from the script"
-        ),
-    },
-}
-
-
-def _assert_refusal(result: dict) -> None:
-    """The result is the agent's own refusal, not something the executor ran."""
-    assert result["outcome"] == "failure"
-    assert result["calls"] == []
-    assert result["error"] == executor_service._TLS_POLICY_REFUSAL_ERROR
-    assert result["runVars"] == {}
-    assert result["elapsedMs"] == 0
-    assert result["startedAt"] == result["endedAt"]
-    assert result["ingressBytes"] == 0 and result["egressBytes"] == 0
-
-
-def test_run_sync_refuses_script_disabling_tls(_reset_policy):
-    """TLS policy on: a script setting rejectInvalidCerts=false is declined
-    before any wire activity — no calls, explanatory error, and an `error`
-    notification event: the refusal never reached the executor, so no
-    extension rule could have raised the event a failure is alerted on."""
-    executor_service.init_egress_policy(False, True)
-    result = executor_service._run_sync(JobPayload(script=TLS_OFF_SCRIPT))
-    _assert_refusal(result)
-    assert result["actions"] == {"notifications": [REFUSAL_EVENT]}
-
-
-def test_run_sync_refusal_is_announced_every_tick(_reset_policy):
-    """A refused script is refused again every tick until it is changed, and
-    every refusal carries the event — a single announcement could be lost to
-    the dispatcher's failure cooldown with no second chance. Whatever `prev`
-    says makes no difference."""
-    executor_service.init_egress_policy(False, True)
-
-    first = executor_service._run_sync(JobPayload(script=TLS_OFF_SCRIPT))
-    _assert_refusal(first)
-
-    repeat = executor_service._run_sync(JobPayload(script=TLS_OFF_SCRIPT, prev=first))
-    _assert_refusal(repeat)
-    assert repeat["actions"] == {"notifications": [REFUSAL_EVENT]}
-
-
-def test_run_after_refusal_recovers(loopback_server, _reset_policy):
-    """The refusal is a failure like any other to the run that follows it: a
-    fixed script succeeding with the refusal as `prev` emits `recovered`, in
-    exactly the shape the agent's own events copy."""
-    executor_service.init_egress_policy(False, True)
-    refusal = executor_service._run_sync(JobPayload(script=TLS_OFF_SCRIPT))
-
-    fixed = JobPayload(script=f'get("{loopback_server}").expect(status: 200)', prev=refusal)
-    result = executor_service._run_sync(fixed)
-    assert result["outcome"] == "success"
-    assert result["actions"]["notifications"] == [
-        {
-            "callIndex": -1,
-            "conditionIndex": -1,
-            "trigger": "recovered",
-            "scope": None,
-            "notification": {"tag": "text", "value": "${s.name} in ${w.name}.${p.name} recovered"},
-        }
-    ]
-
-
-def test_run_sync_allows_tls_verifying_script(loopback_server, _reset_policy):
-    """TLS policy on but the script does not disable verification: it runs
-    normally (against a loopback target, egress off)."""
-    executor_service.init_egress_policy(False, True)
-    payload = JobPayload(script=f'get("{loopback_server}").expect(status: 200)')
+def test_run_sync_runs_script_disabling_tls(loopback_server, _reset_policy):
+    """A script that turns certificate verification off is the script author's
+    call and is run as written, in production as anywhere else."""
+    executor_service.init_egress_policy(False)
+    payload = JobPayload(
+        script=f'get("{loopback_server}", {{ security: {{ rejectInvalidCerts: false }} }})'
+        '.expect(status: 200)'
+    )
     result = executor_service._run_sync(payload)
     assert result["outcome"] == "success"
-    # The agent adds no event of its own to a result the executor produced.
-    assert "notifications" not in result["actions"]
+    assert result["calls"][0]["response"]["status"] == 200

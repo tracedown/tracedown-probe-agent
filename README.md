@@ -26,9 +26,7 @@ so the scheduler learns the run is over from the agent instead of guessing. A
 dispatch without a run budget runs to whatever the script's own per-call timeouts
 allow. The timeout result carries a `timeout` notification event, just as a result
 from a completed executor run would, so the outage itself is alerted on and not
-only the recovery after it. The same goes for a script the agent refuses to run
-(TLS verification turned off where `PROBE_AGENT_FORCE_TLS_VERIFY` requires it):
-every refusal carries an `error` event until the script is fixed.
+only the recovery after it.
 
 A run that never started because the agent's probe pool was full is the agent's
 problem, not the target's. It is not answered with a result at all but declined
