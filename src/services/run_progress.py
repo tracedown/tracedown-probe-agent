@@ -33,6 +33,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from services import tcp_state
+
 # Where a run can be. The first two are outside any request.
 STARTING = "starting"
 BETWEEN_REQUESTS = "between_requests"
@@ -57,19 +59,32 @@ class _Request:
         "conn_id",
         "connect_ms",
         "dns_ms",
+        "fd",
         "first_byte_ms",
         "host",
         "method",
+        "name",
+        "port",
         "started",
+        "timed_out",
+        "tls",
         "tls_ms",
         "url",
     )
 
-    def __init__(self, conn_id: int, method: str, url: str, host: str) -> None:
+    def __init__(self, conn_id: int, method: str, url: str, host: str, name: str, port: int, tls: bool) -> None:
         self.conn_id = conn_id
         self.method = method
         self.url = url
         self.host = host
+        # The bare host name or address, without the port `host` may carry.
+        self.name = name
+        self.port = port
+        self.tls = tls
+        # The connection's descriptor, once it has one: what the kernel's
+        # record of the connection is read through (tcp_state.read).
+        self.fd = -1
+        self.timed_out = False
         self.started = time.monotonic()
         self.dns_ms: int | None = None
         self.connect_ms: int | None = None
@@ -93,6 +108,9 @@ class RunProgress:
         self.request: _Request | None = None
         self.ingress = 0
         self.egress = 0
+        # One entry per request whose timer expired inside the executor (a
+        # per-call timeout, or one attempt of a retried call), in order.
+        self.timeouts: list[dict[str, Any]] = []
 
     def enter(self, phase: str) -> None:
         if phase != self.phase:
@@ -115,7 +133,15 @@ class RunProgress:
             "requestsCompleted": self.requests_completed,
             "request": None,
         }
+        tcp = tcp_state.read(request.fd) if request is not None else None
+        if request is not None and self.request is not request:
+            # The request finished while it was being read: its descriptor may
+            # already belong to something else.
+            tcp = None
+        stall["verdict"], stall["reason"] = tcp_state.verdict(phase, tcp)
         if request is not None:
+            stall["target"] = _target(request)
+            stall["tcp"] = tcp
             stall["request"] = {
                 "method": request.method,
                 "url": request.url,
@@ -127,6 +153,35 @@ class RunProgress:
                 "bytesReceived": request.bytes_received,
             }
         return stall
+
+
+def _target(request: _Request) -> dict[str, Any]:
+    """Where a request went, in the form a second agent can be asked to reach."""
+    return {"host": request.name, "port": request.port, "tls": request.tls}
+
+
+def on_timeout() -> None:
+    """Called where a request's timer expires on the run's thread.
+
+    Records the connection's TCP state at that moment, before the executor
+    closes it — afterwards the kernel's record is gone.
+    """
+    p = _current()
+    request = p.request if p is not None else None
+    if p is None or request is None or request.timed_out:
+        return
+    request.timed_out = True
+    tcp = tcp_state.read(request.fd)
+    verdict, reason = tcp_state.verdict(p.phase, tcp)
+    p.timeouts.append({
+        "at": time.time(),
+        "phase": p.phase,
+        "verdict": verdict,
+        "reason": reason,
+        "request": {"method": request.method, "url": request.url},
+        "target": _target(request),
+        "tcp": tcp,
+    })
 
 
 def describe(stall: dict[str, Any]) -> str:
@@ -258,8 +313,13 @@ def install() -> None:
         if p is None or request is None:
             return orig_connect(self, address)
         p.enter(CONNECTING)
+        request.fd = self.fileno()
         t0 = time.monotonic()
-        result = orig_connect(self, address)
+        try:
+            result = orig_connect(self, address)
+        except TimeoutError:
+            on_timeout()
+            raise
         request.connect_ms = _ms(t0, time.monotonic())
         return result
 
@@ -270,7 +330,11 @@ def install() -> None:
             return orig_wrap_socket(self, *args, **kwargs)
         p.enter(TLS_HANDSHAKE)
         t0 = time.monotonic()
-        result = orig_wrap_socket(self, *args, **kwargs)
+        try:
+            result = orig_wrap_socket(self, *args, **kwargs)
+        except TimeoutError:
+            on_timeout()
+            raise
         request.tls_ms = _ms(t0, time.monotonic())
         return result
 
@@ -283,7 +347,9 @@ def install() -> None:
         https = isinstance(self, http.client.HTTPSConnection)
         default_port = 443 if https else 80
         host = self.host if self.port == default_port else f"{self.host}:{self.port}"
-        p.request = _Request(id(self), method, f"{'https' if https else 'http'}://{host}{url}", host)
+        p.request = _Request(
+            id(self), method, f"{'https' if https else 'http'}://{host}{url}", host, self.host, self.port, https
+        )
         orig_request(self, method, url, *args, **kwargs)
         # The request is on the wire; whatever comes next is the peer's turn.
         p.enter(AWAITING_RESPONSE)

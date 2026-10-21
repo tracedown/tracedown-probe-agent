@@ -52,7 +52,11 @@ class _CountingReader:
         self._fp = fp
 
     def read(self, *args: Any) -> bytes:
-        data = self._fp.read(*args)
+        try:
+            data = self._fp.read(*args)
+        except TimeoutError:
+            run_progress.on_timeout()
+            raise
         if data:
             run_progress.on_received(len(data))
             c = _counter()
@@ -61,7 +65,11 @@ class _CountingReader:
         return data
 
     def readline(self, *args: Any) -> bytes:
-        data = self._fp.readline(*args)
+        try:
+            data = self._fp.readline(*args)
+        except TimeoutError:
+            run_progress.on_timeout()
+            raise
         if data:
             run_progress.on_received(len(data))
             c = _counter()
@@ -70,7 +78,11 @@ class _CountingReader:
         return data
 
     def readinto(self, buf: Any) -> int:
-        n = self._fp.readinto(buf)
+        try:
+            n = self._fp.readinto(buf)
+        except TimeoutError:
+            run_progress.on_timeout()
+            raise
         if n:
             run_progress.on_received(n)
             c = _counter()
@@ -99,7 +111,13 @@ def install() -> None:
         if c.active and isinstance(data, (bytes, bytearray)):
             c.egress += len(data)
             run_progress.on_sent(len(data))
-        return orig_send(self, data)
+        try:
+            return orig_send(self, data)
+        except TimeoutError:
+            # Where the timer expired, read before the executor closes the
+            # connection (run_progress.on_timeout).
+            run_progress.on_timeout()
+            raise
 
     def patched_resp_init(self: http.client.HTTPResponse, *args: Any, **kwargs: Any) -> None:
         orig_resp_init(self, *args, **kwargs)

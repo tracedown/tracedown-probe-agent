@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import patch
@@ -37,51 +36,6 @@ def _instrumented(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             yield
     finally:
         pool.shutdown(wait=False)
-
-
-@pytest.fixture
-def server() -> Iterator[Callable[[Callable[[socket.socket], None]], str]]:
-    """A raw TCP server whose behaviour per connection the test supplies.
-
-    Closing every accepted socket on the way out is what ends the over-budget
-    executor thread, which otherwise runs on to its own per-call timeout.
-    """
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen()
-    release = threading.Event()
-    accepted: list[socket.socket] = []
-
-    def start(behaviour: Callable[[socket.socket], None]) -> str:
-        def serve() -> None:
-            while True:
-                try:
-                    conn, _ = listener.accept()
-                except OSError:
-                    return
-                accepted.append(conn)
-                threading.Thread(target=handle, args=(conn,), daemon=True).start()
-
-        def handle(conn: socket.socket) -> None:
-            try:
-                conn.recv(65536)
-                behaviour(conn)
-                release.wait(10)
-            except OSError:
-                pass
-
-        threading.Thread(target=serve, daemon=True).start()
-        return f"http://127.0.0.1:{listener.getsockname()[1]}"
-
-    yield start
-    release.set()
-    listener.close()
-    for conn in accepted:
-        try:
-            conn.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        conn.close()
 
 
 def _run(script: str) -> dict[str, Any]:

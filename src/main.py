@@ -24,6 +24,7 @@ from mtls.renewal import renewal_loop
 from mtls.ssl_context import build_server_context, certs_exist
 from routes.health import router as health_router
 from routes.probe import router as probe_router
+from routes.reach import router as reach_router
 from services import run_progress, wire_metrics
 from services.executor import (
     init_egress_policy,
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.include_router(probe_router)
     app.include_router(health_router)
+    app.include_router(reach_router)
     return app
 
 

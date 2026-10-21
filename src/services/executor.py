@@ -29,7 +29,7 @@ from lacelang_executor import LaceExecutor
 from lacelang_validator.parser import parse as _parse_lace
 
 from models.job import JobPayload
-from services import egress_guard, run_progress, wire_metrics
+from services import egress_guard, run_progress, tcp_state, wire_metrics
 from storage.base import BodyStorage
 
 log = logging.getLogger(__name__)
@@ -187,6 +187,9 @@ def _run_sync(payload: JobPayload) -> dict[str, Any]:
         # persists and aggregates them.
         result["ingressBytes"] = wire.ingress
         result["egressBytes"] = wire.egress
+        attribution = _attribute_call_timeouts(result, progress.timeouts)
+        if attribution is not None:
+            result["attribution"] = attribution
 
         # Upload any saved bodies and rewrite paths in the result.
         if _storage is not None:
@@ -370,6 +373,61 @@ def _tls_policy_refusal() -> dict[str, Any]:
     }
 
 
+def _parse_iso(value: Any) -> float | None:
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except ValueError:
+        return None
+
+
+# How a run's verdict is drawn from its calls': the first that applies wins.
+# Any call the endpoint is answerable for makes it the endpoint's; a call
+# nothing could be said about keeps the run undecided; only then is it the
+# path's or the agent's.
+_VERDICT_ORDER = ("endpoint", "unknown", "network", "agent")
+
+
+def _attribute_call_timeouts(
+    result: dict[str, Any], timeouts: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Who each timed-out call's stall belongs to, and the run's verdict.
+
+    `timeouts` is what `run_progress` recorded where each request's timer
+    expired, with the connection's TCP state at that moment. A call that was
+    retried timed out once per attempt; its last attempt is the one judged.
+    Calls are matched to records by time, since a call carries its start and
+    end and runs alone. A timed-out call with no record (the timer expired
+    somewhere not hooked) is `unknown`.
+
+    Agent metadata beside the byte counters, not part of the Lace
+    ProbeResult. The agent decides nothing with it: the scheduler reads the
+    verdict and settles the run's status (see `tcp_state`).
+    """
+    calls = [c for c in result.get("calls") or [] if c.get("outcome") == "timeout"]
+    if not calls:
+        return None
+    judged: list[dict[str, Any]] = []
+    for call in calls:
+        started, ended = _parse_iso(call.get("startedAt")), _parse_iso(call.get("endedAt"))
+        own = [
+            t for t in timeouts
+            if started is not None and ended is not None and started - 0.01 <= t["at"] <= ended + 0.01
+        ]
+        if own:
+            record = {k: v for k, v in own[-1].items() if k != "at"}
+        else:
+            record = {"verdict": "unknown", "reason": "the timeout was not observed on a connection"}
+        judged.append({"callIndex": call.get("index"), **record})
+    verdicts = {j["verdict"] for j in judged}
+    run_verdict = next(v for v in _VERDICT_ORDER if v in verdicts)
+    attribution: dict[str, Any] = {"verdict": run_verdict, "calls": judged}
+    # What a second agent should try to reach when the path is in question.
+    target = next((j.get("target") for j in judged if j["verdict"] == "network" and j.get("target")), None)
+    if run_verdict == "network" and target is not None:
+        attribution["target"] = target
+    return attribution
+
+
 def _run_budget_timeout(
     budget_ms: int,
     started_at: str,
@@ -425,6 +483,12 @@ def _run_budget_timeout(
     }
     if stall is not None:
         result["stall"] = stall
+        # The same verdict a call's own timeout gets (see
+        # `_attribute_call_timeouts`), from where the run stood at expiry.
+        attribution: dict[str, Any] = {"verdict": stall["verdict"], "reason": stall["reason"]}
+        if stall["verdict"] == "network" and stall.get("target"):
+            attribution["target"] = stall["target"]
+        result["attribution"] = attribution
     return result
 
 
@@ -523,6 +587,23 @@ async def execute_probe(payload: JobPayload) -> dict[str, Any]:
             budget_ms,
         )
         raise AgentAtCapacity(budget_ms)
+
+
+def _reach_sync(host: str, port: int, use_tls: bool) -> dict[str, Any]:
+    # Dials a tenant's target, so the same egress policy as a probe run.
+    guard_ctx = egress_guard.active() if _egress_enabled else nullcontext()
+    with guard_ctx:
+        return tcp_state.reach(host, port, use_tls)
+
+
+async def reach_target(host: str, port: int, use_tls: bool) -> dict[str, Any]:
+    """Whether this agent reaches [host]:[port] over a clean path (`tcp_state.reach`).
+
+    Asked by the scheduler of a second agent when a run's timeout was put down
+    to the path. On the default pool rather than the probe pool: it is part of
+    settling another run, and must not queue behind this agent's own probes.
+    """
+    return await asyncio.to_thread(_reach_sync, host, port, use_tls)
 
 
 async def run_health_script(token_url: str) -> str:
