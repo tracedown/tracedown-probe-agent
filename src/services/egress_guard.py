@@ -15,11 +15,6 @@ internally, with no executor API involved. Everything else the agent does
 (health challenge to the internal gateway, mTLS bootstrap/renewal, S3 body
 upload) runs without the flag set and is never affected.
 
-The companion TLS check (:func:`script_rejects_tls_verification`) is a static
-inspection of the parsed script: in the hosted deployment the agent refuses to
-run a tenant script that turns certificate verification off, rather than
-reaching into Lace to override it.
-
 Non-http(s) schemes never reach here — the executor's HTTP layer only speaks
 http/https and rejects the rest itself.
 """
@@ -178,18 +173,3 @@ def install() -> None:
     socket.getaddrinfo = _guarded_getaddrinfo  # type: ignore[assignment]
     socket.socket.connect = _guarded_connect  # type: ignore[assignment,method-assign]
     _installed = True
-
-
-# ── Static TLS-verification check (SEC-H6) ──────────────────────────
-
-def script_rejects_tls_verification(ast: dict[str, Any]) -> bool:
-    """True if any call in the parsed script sets ``security.rejectInvalidCerts``
-    to ``false``. The grammar makes this a bool literal, so the parsed config
-    carries a plain ``False`` — no expression evaluation needed. The hosted
-    agent refuses to run such a script rather than overriding Lace internals.
-    """
-    for call in ast.get("calls", []) or []:
-        security = (call.get("config") or {}).get("security")
-        if isinstance(security, dict) and security.get("rejectInvalidCerts") is False:
-            return True
-    return False
