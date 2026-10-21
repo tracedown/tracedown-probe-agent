@@ -24,7 +24,8 @@ from mtls.renewal import renewal_loop
 from mtls.ssl_context import build_server_context, certs_exist
 from routes.health import router as health_router
 from routes.probe import router as probe_router
-from services import wire_metrics
+from routes.reach import router as reach_router
+from services import run_progress, wire_metrics
 from services.executor import (
     init_egress_policy,
     init_probe_pool,
@@ -62,6 +63,8 @@ async def lifespan(app: FastAPI):
 
     # Instrument http.client so each probe's HTTP-layer ingress/egress is measured.
     wire_metrics.install()
+    # And record how far each run has got, for a run that outlives its budget.
+    run_progress.install()
 
     storage = _create_storage(settings)
     init_storage(storage)
@@ -110,6 +113,7 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.include_router(probe_router)
     app.include_router(health_router)
+    app.include_router(reach_router)
     return app
 
 
